@@ -1,14 +1,27 @@
 #!/usr/bin/env python3
 # ╔══════════════════════════════════════════════════════════╗
-# ║  MSTL LOGIC — Módulo de Descarga  v2.0                  ║
+# ║  MSTL LOGIC — Módulo de Descarga  V13                   ║
 # ║  Instagram · TikTok · YouTube · Facebook · +            ║
 # ║  Motor: Instaloader + yt-dlp | Sin FFmpeg | Pydroid 3   ║
-# ║  API pública: descargar(url, callback=None)             ║
 # ║                                                          ║
-# ║  Cambios v2.0:                                          ║
-# ║  · COOKIES_PATH → función dinámica _get_cookies_path()  ║
-# ║    Busca cookies en Android/data/org.test.cyberload/    ║
-# ║    files/ primero, luego /sdcard/ como fallback.        ║
+# ║  API pública:                                           ║
+# ║    descargar(url, callback)        → router principal   ║
+# ║    descargar_solo_video(url, cb)   → MP4 directo [V13]  ║
+# ║    descargar_solo_imagenes(url,cb) → fotos/carrusel[V13]║
+# ║    detectar_plataforma(url)        → str de plataforma  ║
+# ║                                                          ║
+# ║  Cambios V13:                                           ║
+# ║  · detectar_plataforma() → añadido 'facebook'          ║
+# ║    Detecta: facebook.com / fb.com / fb.watch /          ║
+# ║    m.facebook.com / fbwat.ch / web.facebook.com        ║
+# ║  · descargar_solo_video() → nueva función para          ║
+# ║    la ventana flotante. Descarga exclusivamente MP4     ║
+# ║    con yt-dlp. Compatible con todas las plataformas.   ║
+# ║  · descargar_solo_imagenes() → nueva función para       ║
+# ║    la ventana flotante. Instagram → motor_instagram;    ║
+# ║    TikTok → motor_tiktok (ya maneja carruseles);        ║
+# ║    General → fallback a video si no hay imágenes.       ║
+# ║  · Cambios en V12/V11/V10... heredados sin modificar.  ║
 # ╚══════════════════════════════════════════════════════════╝
 
 import yt_dlp
@@ -25,31 +38,15 @@ from pathlib import Path
 
 # ══════════════════════════════════════════════════════════
 #   CONFIGURACIÓN Y RUTAS FIJAS
-#   CRÍTICO: /storage/emulated/0/ es la ruta real en Android.
-#   /sdcard/ es un symlink que Pydroid 3 no siempre resuelve
-#   con permisos de escritura correctos → archivos "fantasma".
 # ══════════════════════════════════════════════════════════
 RUTA_DOWNLOADS = '/storage/emulated/0/Download/'
 HISTORIAL_PATH = '/storage/emulated/0/Download/mstl_historial.json'
 
-# Garantizar carpeta destino antes de cualquier operación
 os.makedirs(RUTA_DOWNLOADS, exist_ok=True)
 
 
 # ══════════════════════════════════════════════════════════
-#   RUTA DINÁMICA DE COOKIES — v2.0
-#
-#   La función _get_cookies_path() busca cookies.txt en el
-#   siguiente orden de prioridad:
-#
-#   1. Android/data/org.test.cyberload/files/cookies.txt
-#      → ruta interna de la app (descargada desde GitHub)
-#   2. /sdcard/cookies.txt
-#      → compatibilidad con versiones anteriores (manual)
-#   3. None → sin cookies disponibles
-#
-#   Esto garantiza que main.py y mstl_logic.py siempre
-#   lean desde la misma ruta, independientemente del entorno.
+#   RUTA DINÁMICA DE COOKIES — v2.0 (sin cambios)
 # ══════════════════════════════════════════════════════════
 
 def _get_cookies_path():
@@ -61,8 +58,6 @@ def _get_cookies_path():
         2. /sdcard/cookies.txt (compatibilidad)
         3. None si no existe ninguna
     """
-    # ── Prioridad 1: carpeta interna de la app (v2.0) ────────────────
-    # Misma lógica que main.py para coherencia de rutas.
     app_cookies = None
 
     try:
@@ -76,7 +71,6 @@ def _get_cookies_path():
         pass
 
     if app_cookies is None:
-        # Fallback hardcoded para Android sin jnius
         android_files = '/storage/emulated/0/Android/data/org.test.cyberload/files/cookies.txt'
         if os.path.exists(os.path.dirname(android_files)):
             app_cookies = android_files
@@ -84,12 +78,11 @@ def _get_cookies_path():
     if app_cookies and os.path.exists(app_cookies):
         return app_cookies
 
-    # ── Prioridad 2: /sdcard/ (compatibilidad con versiones anteriores)
     if os.path.exists('/sdcard/cookies.txt'):
         return '/sdcard/cookies.txt'
 
-    # ── Sin cookies disponibles ──────────────────────────────────────
     return None
+
 
 # ── Colores ANSI (terminal) ───────────────────────────────
 R, BOLD, GREEN, GOLD, RED, YELLOW, CYAN, GRAY = (
@@ -100,27 +93,13 @@ R, BOLD, GREEN, GOLD, RED, YELLOW, CYAN, GRAY = (
 def c(texto, *estilos):
     return "".join(estilos) + str(texto) + R
 
-# Extensiones de imagen para detección en entradas yt-dlp
 IMAGE_EXTS = {'jpg', 'jpeg', 'png', 'webp'}
 
-# outtmpl canónica — Regla de Oro:
-# yt-dlp resuelve %(title)s y %(id)s desde los metadatos reales.
-# NUNCA construir el nombre manualmente con f-strings de Python.
 OUTTMPL_GOLD = os.path.join(RUTA_DOWNLOADS, '%(title).100s [%(id)s].%(ext)s')
 
 
 # ══════════════════════════════════════════════════════════
 #   HELPER CENTRAL: NOTIFICACIÓN DUAL — Terminal + GUI
-#
-#   _notify() emite mensajes a DOS destinos simultáneamente:
-#     1. Terminal → msg_raw  (con colores ANSI)
-#     2. GUI      → clean_msg (texto limpio, sin ANSI)
-#
-#   Si clean_msg es None, se extrae automáticamente de
-#   msg_raw eliminando todos los códigos ANSI con regex.
-#
-#   TODOS los motores usan esta función para no duplicar
-#   la lógica de notificación.
 # ══════════════════════════════════════════════════════════
 
 def _notify(msg_raw, clean_msg=None, callback=None):
@@ -145,12 +124,10 @@ def _notify(msg_raw, clean_msg=None, callback=None):
 # ══════════════════════════════════════════════════════════
 
 def gen_id(n=4):
-    """Genera un ID aleatorio de N caracteres alfanuméricos."""
     return ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(n))
 
 
 def sanitizar_nombre(nombre):
-    """Elimina caracteres ilegales en rutas de archivo Android."""
     nombre = re.sub(r'[\\/*?"<>|\n\r\t]', "", str(nombre))
     return nombre.strip()[:100]
 
@@ -164,10 +141,7 @@ def obtener_espacio_libre():
 
 
 def verificar_limite_espacio(callback=None):
-    """
-    Barrera de seguridad: al menos 500 MB libres antes de descargar.
-    Usa RUTA_DOWNLOADS real para que statvfs lea el filesystem correcto.
-    """
+    """Barrera de seguridad: al menos 500 MB libres antes de descargar."""
     try:
         stat = os.statvfs(RUTA_DOWNLOADS)
         mb = (stat.f_bavail * stat.f_frsize) / (1024 ** 2)
@@ -182,7 +156,7 @@ def verificar_limite_espacio(callback=None):
             f"⚠️ No se pudo verificar espacio: {e}",
             callback
         )
-        return True  # En caso de error, dejar continuar
+        return True
 
 
 def guardar_historial(titulo, url):
@@ -205,23 +179,48 @@ def guardar_historial(titulo, url):
         pass
 
 
+# ══════════════════════════════════════════════════════════
+#   DETECTOR DE PLATAFORMA — V13: añadido 'facebook'
+#
+#   Retorna: 'instagram' | 'tiktok' | 'facebook' | 'general'
+#
+#   NUEVA EN V13: detección de Facebook.
+#   Dominios detectados:
+#     facebook.com, m.facebook.com, web.facebook.com,
+#     fb.com, fb.watch, fbwat.ch, l.facebook.com
+#
+#   IMPORTANTE: Facebook NO ofrece imágenes vía API pública.
+#   Solo se permite descarga de video desde la PantallaFlotante.
+#   El motor_general (yt-dlp) maneja el video de FB sin problemas.
+# ══════════════════════════════════════════════════════════
+
 def detectar_plataforma(url):
     """
-    Retorna: 'instagram' | 'tiktok' | 'general'
+    Detecta la plataforma de la URL.
+
+    Retorna: 'instagram' | 'tiktok' | 'facebook' | 'general'
     """
     u = url.lower()
+
     if 'instagram.com' in u:
         return 'instagram'
+
     if 'tiktok.com' in u or 'vm.tiktok.com' in u:
         return 'tiktok'
+
+    # ── Facebook — V13 ────────────────────────────────────────────
+    dominios_facebook = (
+        'facebook.com', 'fb.com', 'fb.watch',
+        'fbwat.ch', 'm.facebook.com', 'web.facebook.com',
+        'l.facebook.com',
+    )
+    if any(d in u for d in dominios_facebook):
+        return 'facebook'
+
     return 'general'
 
 
 def _ruta_segura(directorio, filename):
-    """
-    Construye la ruta completa. Si el archivo ya existe,
-    añade sufijo de 4 chars para evitar sobreescritura.
-    """
     ruta = os.path.join(directorio, filename)
     if os.path.exists(ruta):
         base, ext = os.path.splitext(ruta)
@@ -230,10 +229,6 @@ def _ruta_segura(directorio, filename):
 
 
 def _convertir_webp_a_jpg(filepath, callback=None):
-    """
-    Convierte .webp → .jpg con Pillow si está instalado.
-    Sin Pillow, conserva el .webp original sin error.
-    """
     if not filepath.lower().endswith('.webp'):
         return filepath
     try:
@@ -252,10 +247,6 @@ def _convertir_webp_a_jpg(filepath, callback=None):
 
 
 def _cookies_ok(callback=None):
-    """
-    Verifica que el archivo de cookies exista y lo devuelve (o None).
-    v2.0: Usa _get_cookies_path() para detección dinámica de rutas.
-    """
     ruta = _get_cookies_path()
     if ruta:
         print(f"  {c(f'🍪 Cookies encontradas: {ruta}', GREEN)}")
@@ -270,30 +261,9 @@ def _cookies_ok(callback=None):
 
 # ══════════════════════════════════════════════════════════
 #   FIX v1.3 — ACTUALIZADOR DE FECHAS
-#
-#   Problema: Instaloader y yt-dlp preservan la fecha de
-#   publicación original del post vía os.utime interno.
-#   Esto hace que las fotos aparezcan "enterradas" al final
-#   de la galería de Android (ordenada por fecha).
-#
-#   Solución: Después de cada descarga, actualizar atime y
-#   mtime de todos los archivos de la sesión al momento
-#   presente con os.utime(ruta, None).
-#
-#   La sesión se identifica por session_id en el nombre
-#   del archivo → solo se tocan los archivos recién
-#   descargados, nunca archivos preexistentes.
 # ══════════════════════════════════════════════════════════
 
 def actualizar_fechas_archivos(session_id, callback=None):
-    """
-    Recorre RUTA_DOWNLOADS y actualiza atime+mtime al tiempo
-    actual en todos los archivos de esta sesión.
-
-    Parámetros:
-        session_id (str)           : ID de 4 chars de la sesión activa.
-        callback   (callable|None) : función(str) para notificar a la GUI.
-    """
     actualizados = 0
     try:
         for f in os.listdir(RUTA_DOWNLOADS):
@@ -302,16 +272,12 @@ def actualizar_fechas_archivos(session_id, callback=None):
             ruta_f = os.path.join(RUTA_DOWNLOADS, f)
             if not os.path.isfile(ruta_f):
                 continue
-            os.utime(ruta_f, None)  # None → atime y mtime = AHORA
+            os.utime(ruta_f, None)
             actualizados += 1
 
         if actualizados:
             msg = f"🕐 Fechas actualizadas: {actualizados} archivo(s) → timestamp = AHORA"
-            _notify(
-                f"  {c(msg, GREEN)}",
-                msg,
-                callback
-            )
+            _notify(f"  {c(msg, GREEN)}", msg, callback)
     except Exception as e:
         _notify(
             f"  {c(f'⚠️  No se pudo actualizar fechas ({e})', YELLOW)}",
@@ -321,14 +287,10 @@ def actualizar_fechas_archivos(session_id, callback=None):
 
 
 # ══════════════════════════════════════════════════════════
-#   DESCARGA HTTP DIRECTA — urllib puro, sin requests
-#   Para fotos CDN de TikTok e Instagram.
+#   DESCARGA HTTP DIRECTA
 # ══════════════════════════════════════════════════════════
 
 def _descargar_http(src_url, filepath, referer=""):
-    """
-    Descarga directa con User-Agent de Chrome Android.
-    """
     headers = {
         'User-Agent': (
             'Mozilla/5.0 (Linux; Android 12; SM-A525F) '
@@ -352,19 +314,6 @@ def _descargar_http(src_url, filepath, referer=""):
 
 # ══════════════════════════════════════════════════════════
 #   MOTOR INSTAGRAM  (Instaloader primario + yt-dlp fallback)
-#
-#   NOMBRES:
-#     filename_pattern = '{profile}_{shortcode}_{session_id}'
-#     Instaloader añade _1, _2... automáticamente en carruseles.
-#
-#   RUTA:
-#     dirname_pattern  = RUTA_DOWNLOADS  → sin subcarpetas
-#     target           = Path(RUTA_DOWNLOADS) → fuerza directorio
-#
-#   POST-DESCARGA:
-#     → actualizar_fechas_archivos(session_id, callback) [v1.3 FIX]
-#     → Verificación física con session_id en os.listdir()
-#     → Limpieza de .json.xz, .txt, .xz y JPGs < 50 KB
 # ══════════════════════════════════════════════════════════
 
 def motor_instagram(url, callback=None):
@@ -384,12 +333,6 @@ def motor_instagram(url, callback=None):
 
         session_id = gen_id(4)
 
-        # ── Instaloader configurado ────────────────────────────
-        # dirname_pattern: directorio destino sin subcarpetas.
-        # filename_pattern: {profile}_{shortcode}_{session_id}
-        #   → carrusel IG añade automáticamente _1, _2, _3
-        # download_videos=True: CRÍTICO para carruseles mixtos
-        # ──────────────────────────────────────────────────────
         L = instaloader.Instaloader(
             dirname_pattern              = RUTA_DOWNLOADS,
             filename_pattern             = '{profile}_{shortcode}_' + session_id,
@@ -400,7 +343,6 @@ def motor_instagram(url, callback=None):
             quiet                        = True,
         )
 
-        # ── Inyectar cookies Netscape ──────────────────────────
         if cookies_path:
             try:
                 import http.cookiejar
@@ -411,7 +353,6 @@ def motor_instagram(url, callback=None):
             except Exception as ce:
                 print(f"  {c(f'⚠️  No se pudieron cargar cookies: {ce}', YELLOW)}")
 
-        # ── Extraer shortcode ──────────────────────────────────
         match = re.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', url)
         if not match:
             raise ValueError("No se pudo extraer el shortcode de la URL de Instagram.")
@@ -426,21 +367,10 @@ def motor_instagram(url, callback=None):
             callback
         )
 
-        # ── Descarga con target como Path absoluto ─────────────
-        # Path() es necesario: string → Instaloader crea subcarpeta.
         L.download_post(post, target=Path(RUTA_DOWNLOADS))
-
-        # ── v1.3 FIX: Actualizar timestamps al tiempo presente ─
-        # Sobreescribe la fecha de publicación original que
-        # Instaloader aplica, para que los archivos aparezcan
-        # primero en la galería de Android (orden por fecha desc).
         actualizar_fechas_archivos(session_id, callback)
 
-        # ── Verificación física ────────────────────────────────
-        archivos_sesion = [
-            f for f in os.listdir(RUTA_DOWNLOADS)
-            if session_id in f
-        ]
+        archivos_sesion = [f for f in os.listdir(RUTA_DOWNLOADS) if session_id in f]
 
         if not archivos_sesion:
             _notify(
@@ -451,10 +381,6 @@ def motor_instagram(url, callback=None):
             motor_general(url, callback=callback)
             return
 
-        # ── Limpieza post-descarga ─────────────────────────────
-        # Solo toca archivos de ESTA sesión (contienen session_id).
-        # Elimina: metadatos .json.xz / .xz / .txt
-        #          miniaturas basura < 50 KB
         eliminados = 0
         for f in os.listdir(RUTA_DOWNLOADS):
             if session_id not in f:
@@ -469,10 +395,7 @@ def motor_instagram(url, callback=None):
                 os.remove(ruta_f)
                 eliminados += 1
 
-        guardados = [
-            f for f in os.listdir(RUTA_DOWNLOADS)
-            if session_id in f
-        ]
+        guardados = [f for f in os.listdir(RUTA_DOWNLOADS) if session_id in f]
 
         msg_ok = f"✅ Instagram: {len(guardados)} archivo(s) guardado(s), {eliminados} temporales eliminados"
         _notify(
@@ -507,15 +430,6 @@ def motor_instagram(url, callback=None):
 
 # ══════════════════════════════════════════════════════════
 #   MOTOR TIKTOK
-#
-#   Carrusel de fotos:
-#     Nombre: {id}_{session_id}_{num:03d}.{ext}
-#     Descarga HTTP directa con urllib (sin yt-dlp para imágenes)
-#     v1.3 FIX: os.utime(fpath, None) post-descarga HTTP
-#
-#   Video único / entries de video:
-#     outtmpl: OUTTMPL_GOLD → %(title).100s [%(id)s].%(ext)s
-#     v1.3 FIX: 'updatetime': False en todos los opts yt-dlp
 # ══════════════════════════════════════════════════════════
 
 def motor_tiktok(url, callback=None):
@@ -565,7 +479,6 @@ def motor_tiktok(url, callback=None):
                         entry.get('original_url') or ''
                     )
 
-                    # ── Foto directa desde CDN de TikTok ──────
                     if ext_raw in IMAGE_EXTS and eurl.startswith('http'):
                         fname = f"{eid}_{session_id}_{i:03d}.{ext_raw}"
                         fpath = _ruta_segura(RUTA_DOWNLOADS, fname)
@@ -577,7 +490,6 @@ def motor_tiktok(url, callback=None):
                         )
                         if _descargar_http(eurl, fpath, referer="https://www.tiktok.com/"):
                             fpath = _convertir_webp_a_jpg(fpath, callback)
-                            # v1.3 FIX: Timestamp al tiempo presente
                             os.utime(fpath, None)
                             print(c("  ✅ OK", GREEN))
                             ok += 1
@@ -585,7 +497,6 @@ def motor_tiktok(url, callback=None):
                             print(c("  ❌ Falló", RED))
                             fail += 1
 
-                    # ── Entry de video → yt-dlp con outtmpl Gold ─
                     else:
                         opts_item = {
                             'format':             'best[ext=mp4]/best',
@@ -595,7 +506,7 @@ def motor_tiktok(url, callback=None):
                             'nocheckcertificate': True,
                             'cookiefile':         cookies,
                             'noplaylist':         True,
-                            'updatetime':         False,  # v1.3 FIX: no usar fecha del servidor
+                            'updatetime':         False,
                         }
                         etit = sanitizar_nombre(entry.get('title', eid))
                         _notify(
@@ -637,7 +548,7 @@ def motor_tiktok(url, callback=None):
                 'nocheckcertificate': True,
                 'cookiefile':         cookies,
                 'noplaylist':         True,
-                'updatetime':         False,  # v1.3 FIX
+                'updatetime':         False,
             }
             with yt_dlp.YoutubeDL(opts_video) as ydl:
                 ydl.download([url])
@@ -658,9 +569,6 @@ def motor_tiktok(url, callback=None):
 # ══════════════════════════════════════════════════════════
 #   MOTOR GENERAL
 #   YouTube, Facebook, Twitter/X, Reddit, Vimeo, etc.
-#
-#   outtmpl = OUTTMPL_GOLD en todos los casos.
-#   v1.3 FIX: 'updatetime': False en opts_item y opts_video
 # ══════════════════════════════════════════════════════════
 
 def motor_general(url, callback=None):
@@ -686,9 +594,6 @@ def motor_general(url, callback=None):
 
         entries = info.get('entries')
 
-        # ══════════════════════════════════════════════════
-        # CASO A: PLAYLIST / COLECCIÓN MÚLTIPLE
-        # ══════════════════════════════════════════════════
         if entries:
             entries_list = list(entries)
             total = len(entries_list)
@@ -715,7 +620,7 @@ def motor_general(url, callback=None):
                         'nocheckcertificate': True,
                         'cookiefile':         cookies,
                         'noplaylist':         True,
-                        'updatetime':         False,  # v1.3 FIX
+                        'updatetime':         False,
                     }
                     _notify(
                         f"  {c(f'⬇️  [{i}/{total}] {etit[:45]}', YELLOW)}",
@@ -737,9 +642,6 @@ def motor_general(url, callback=None):
             _notify(f"\n  {c(msg_ok, GREEN, BOLD)}", msg_ok, callback)
             guardar_historial(f"Playlist ({ok}/{total} items)", url)
 
-        # ══════════════════════════════════════════════════
-        # CASO B: VIDEO / MEDIA ÚNICO
-        # ══════════════════════════════════════════════════
         else:
             titulo   = info.get('title', 'Sin_Titulo')
             uploader = info.get('uploader', '')
@@ -759,12 +661,11 @@ def motor_general(url, callback=None):
                 'nocheckcertificate': True,
                 'cookiefile':         cookies,
                 'noplaylist':         True,
-                'updatetime':         False,  # v1.3 FIX
+                'updatetime':         False,
             }
             with yt_dlp.YoutubeDL(opts_video) as ydl:
                 ydl.download([url])
 
-            # Nombre para historial
             if isinstance(vistas, int):
                 nombre_display = f"{vistas} views - {titulo} ({uploader})"
             else:
@@ -786,29 +687,167 @@ def motor_general(url, callback=None):
 
 
 # ══════════════════════════════════════════════════════════
+#   DESCARGA SOLO VIDEO — V13
+#
+#   Función exclusiva para la PantallaFlotante de main.py.
+#   Descarga únicamente el video en MP4 de la URL dada,
+#   usando yt-dlp como motor universal.
+#
+#   Compatible con: Instagram, TikTok, Facebook, YouTube,
+#   y cualquier URL que yt-dlp soporte.
+#
+#   Formato de salida: best[ext=mp4]/best
+#     → Prefiere MP4 nativo sin necesidad de FFmpeg.
+#     → Si no hay MP4 nativo, usa el mejor formato disponible.
+#
+#   NOTA IMPORTANTE — Facebook:
+#     yt-dlp puede necesitar cookies para videos privados de FB.
+#     Videos públicos de Facebook generalmente funcionan sin cookies.
+# ══════════════════════════════════════════════════════════
+
+def descargar_solo_video(url, callback=None):
+    """
+    Descarga exclusivamente el video MP4 de la URL.
+
+    Uso desde main.py (PantallaFlotante):
+        from mstl_logic import descargar_solo_video
+        descargar_solo_video(url, callback=mi_callback)
+
+    Parámetros:
+        url      (str)            : URL del video a descargar
+        callback (callable | None): función(str) de progreso
+    """
+    if not verificar_limite_espacio(callback):
+        return
+
+    plataforma = detectar_plataforma(url)
+    icono = {'instagram': '📸', 'tiktok': '🎵', 'facebook': '📘', 'general': '🌐'}.get(plataforma, '🌐')
+
+    _notify(
+        f"\n  {c(f'{icono} Descargando video MP4 ({plataforma.upper()})...', CYAN)}",
+        f"{icono} Descargando video MP4...",
+        callback
+    )
+
+    cookies = _cookies_ok(callback)
+
+    opts = {
+        'format':             'best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
+        'outtmpl':            OUTTMPL_GOLD,
+        'quiet':              False,
+        'no_warnings':        True,
+        'nocheckcertificate': True,
+        'cookiefile':         cookies,
+        'noplaylist':         True,
+        'updatetime':         False,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info  = ydl.extract_info(url, download=True)
+            titulo = sanitizar_nombre(info.get('title', 'video_sin_titulo'))
+
+        # Actualizar timestamp del archivo descargado al momento presente
+        # para que aparezca primero en la galería de Android
+        for f in os.listdir(RUTA_DOWNLOADS):
+            if titulo[:20] in f or (info.get('id') and info['id'] in f):
+                os.utime(os.path.join(RUTA_DOWNLOADS, f), None)
+
+        msg_ok = f"✅ Video MP4 guardado: {titulo[:55]}"
+        _notify(
+            f"\n  {c(msg_ok, GREEN, BOLD)}\n  {c('📂', GOLD)} {RUTA_DOWNLOADS}",
+            msg_ok,
+            callback
+        )
+        guardar_historial(f"[Video] {titulo}", url)
+
+    except Exception as e:
+        msg_err = f"❌ Error al descargar video ({type(e).__name__}): {e}"
+        _notify(f"\n  {c(msg_err, RED)}", msg_err[:70], callback)
+
+
+# ══════════════════════════════════════════════════════════
+#   DESCARGA SOLO IMÁGENES — V13
+#
+#   Función exclusiva para la PantallaFlotante de main.py.
+#   Solo disponible para Instagram y TikTok (la UI de
+#   PantallaFlotante no muestra este botón para Facebook).
+#
+#   Lógica de enrutamiento:
+#     Instagram → motor_instagram() ya maneja carruseles,
+#       fotos únicas, reels con imágenes mezcladas.
+#     TikTok    → motor_tiktok() ya maneja slideshows y
+#       carruseles de fotos con descarga HTTP directa.
+#     General   → fallback a descargar_solo_video() porque
+#       las plataformas genéricas no tienen carruseles de imgs.
+#
+#   NOTA: Facebook excluido intencionalmente.
+#     La API pública de FB bloquea la descarga de imágenes.
+#     Solo se ofrece video MP4 desde la ventana flotante.
+# ══════════════════════════════════════════════════════════
+
+def descargar_solo_imagenes(url, callback=None):
+    """
+    Descarga imágenes o carrusel de la URL.
+
+    Solo para Instagram y TikTok (Facebook excluido en la UI).
+
+    Uso desde main.py (PantallaFlotante):
+        from mstl_logic import descargar_solo_imagenes
+        descargar_solo_imagenes(url, callback=mi_callback)
+
+    Parámetros:
+        url      (str)            : URL del post con imágenes
+        callback (callable | None): función(str) de progreso
+    """
+    if not verificar_limite_espacio(callback):
+        return
+
+    plataforma = detectar_plataforma(url)
+
+    _notify(
+        f"\n  {c(f'🖼️  Descargando imágenes ({plataforma.upper()})...', CYAN)}",
+        f"🖼️ Descargando imágenes de {plataforma.upper()}...",
+        callback
+    )
+
+    if plataforma == 'instagram':
+        # motor_instagram maneja tanto fotos únicas como carruseles
+        motor_instagram(url, callback=callback)
+
+    elif plataforma == 'tiktok':
+        # motor_tiktok maneja slideshows y carruseles automáticamente
+        motor_tiktok(url, callback=callback)
+
+    else:
+        # Para plataformas genéricas sin soporte de imágenes,
+        # caer de vuelta a descarga de video.
+        _notify(
+            f"\n  {c('⚠️  Plataforma sin soporte de imágenes → descargando video...', YELLOW)}",
+            "⚠️ Sin soporte de imágenes → descargando video...",
+            callback
+        )
+        descargar_solo_video(url, callback=callback)
+
+
+# ══════════════════════════════════════════════════════════
 #   ROUTER PRINCIPAL
 #
-#   Única función que main.py necesita importar.
-#   Detecta la plataforma y despacha al motor correcto.
-#
-#   Parámetros:
-#     url      (str)          : URL a descargar
-#     callback (callable|None): función(str) invocada en tiempo
-#                               real con mensajes de progreso.
-#                               Thread-safe: puede llamarse desde
-#                               un hilo secundario sin problemas.
+#   Única función que main.py (modo normal) necesita importar.
+#   La PantallaFlotante usa descargar_solo_video() y
+#   descargar_solo_imagenes() directamente.
 # ══════════════════════════════════════════════════════════
 
 def descargar(url, callback=None):
     """
-    Punto de entrada principal del módulo.
+    Punto de entrada principal del módulo (modo normal).
 
-    Uso desde main.py:
+    Uso desde main.py (CyberLoadUI):
         from mstl_logic import descargar
         descargar(url, callback=mi_funcion_de_estado)
     """
     plataforma = detectar_plataforma(url)
-    iconos = {'instagram': '📷', 'tiktok': '🎵', 'general': '🌐'}
+    iconos = {'instagram': '📷', 'tiktok': '🎵', 'facebook': '📘', 'general': '🌐'}
 
     msg = f"{iconos.get(plataforma, '🔗')} Plataforma detectada: {plataforma.upper()}"
     _notify(f"\n  {c(msg, GOLD, BOLD)}", msg, callback)
@@ -818,4 +857,5 @@ def descargar(url, callback=None):
     elif plataforma == 'tiktok':
         motor_tiktok(url, callback=callback)
     else:
+        # Facebook y General usan motor_general (yt-dlp)
         motor_general(url, callback=callback)
