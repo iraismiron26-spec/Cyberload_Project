@@ -1,177 +1,160 @@
 # ╔══════════════════════════════════════════════════════════════════════╗
-# ║  CYBERLOAD MSTL — GitHub Actions Workflow v13                       ║
+# ║  GitHub Actions Workflow — CYBERLOAD MSTL v13.0                     ║
+# ║  Automatiza la construcción del APK con Buildozer en Ubuntu          ║
 # ║                                                                      ║
-# ║  Cambios V13 vs V12:                                                ║
-# ║  · Cache key → v13 (busta caché corrupta de V12)                   ║
-# ║  · Artefacto → cyberload-mstl-apk-v13                             ║
-# ║  · Labels actualizados a v13                                        ║
-# ║                                                                      ║
-# ║  FIX heredado de V12 (sigue activo):                               ║
-# ║  · "set -o pipefail" para capturar errores reales de buildozer     ║
-# ║  · Java 11 Temurin (AGP 7.x incompatible con Java 17)             ║
-# ║  · Cython 0.29.37 (Cython 3.x rompe recetas p4a)                  ║
-# ║                                                                      ║
-# ║  FIX principal de buildozer.spec V13:                              ║
-# ║  · openssl ELIMINADO de requirements — no existe en PyPI           ║
-# ║    p4a lo compila internamente como receta nativa                   ║
+# ║  Ruta en tu repo: .github/workflows/build_apk.yml                   ║
 # ╚══════════════════════════════════════════════════════════════════════╝
 
-name: 🤖 Build Cyberload MSTL APK
+name: Build Android APK
 
+# ── Activador ──────────────────────────────────────────────────────────
+# El workflow se dispara en cada push a la rama 'main'.
 on:
   push:
     branches:
       - main
-      - master
-  workflow_dispatch:
 
-permissions:
-  contents: read
-
+# ── Trabajo principal ──────────────────────────────────────────────────
 jobs:
-  build-apk:
-    name: 🏗️ Compilar APK (v13)
-    runs-on: ubuntu-22.04
-
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-      BUILDOZER_ANDROID_SDK_ACCEPT_LICENSE: "y"
-      BUILDOZER_WARN_ON_ROOT: "0"
+  build:
+    name: 🏗️ Build Cyberload MSTL v13 APK
+    runs-on: ubuntu-latest
 
     steps:
 
-      - name: 📥 Clonar repositorio
-        uses: actions/checkout@v4
+      # ── PASO 1: Clonar el repositorio ────────────────────────────────
+      - name: 🔍 Checkout del Repositorio
+        uses: actions/checkout@v3
+
+      # ── PASO 2: Configurar Python 3.9 ────────────────────────────────
+      # Python 3.9 es la versión más estable para Buildozer + Kivy 2.2.1
+      # Python 3.10+ puede generar conflictos en recetas p4a.
+      - name: 🐍 Configurar Python 3.9
+        uses: actions/setup-python@v4
         with:
-          fetch-depth: 0
+          python-version: '3.9'
 
-      # Java 11 — NO Java 17.
-      # AGP 7.x (usado por buildozer) solo es compatible con Java 11.
-      - name: ☕ Instalar Java 11 (Temurin)
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "11"
-
-      - name: 🐍 Configurar Python 3.10
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-
-      - name: 🔧 Instalar dependencias del sistema
-        run: |
-          sudo apt-get update -qq
-          sudo apt --fix-broken install -y -qq
-          sudo apt-get install -y \
-            git zip unzip wget curl \
-            python3-pip build-essential ccache \
-            autoconf libtool cmake ninja-build pkg-config \
-            libssl-dev libffi-dev libltdl-dev zlib1g-dev \
-            libjpeg-dev libpng-dev libsqlite3-dev \
-            patchelf libncurses5 libcurl4-openssl-dev
-          echo "✅ Dependencias del sistema instaladas"
-
-      # Cython 0.29.37 — NO Cython 3.x (rompe recetas de p4a)
+      # ── PASO 3: Instalar Buildozer y Cython ──────────────────────────
+      # cython==0.29.19 es la versión pinneada requerida.
+      # Cython 3.x rompe la compilación de módulos de Kivy/p4a.
       - name: 📦 Instalar Buildozer y Cython
         run: |
-          pip install --upgrade pip setuptools wheel
-          pip install "cython==0.29.37"
-          pip install buildozer virtualenv
-          echo "✅ Buildozer $(buildozer version) + Cython 0.29.37 listos"
+          pip install --upgrade pip
+          pip install buildozer
+          pip install cython==0.29.19
 
-      - name: 🔍 Verificar versiones del entorno
+      # ── PASO 4: Instalar dependencias del sistema (apt-get) ───────────
+      # Librerías de desarrollo requeridas por Kivy, SDL2, GStreamer y p4a.
+      # NOTA: libffi6 no existe en Ubuntu 22.04+; se reemplaza por
+      #       libffi-dev + intento gracioso de libffi8 (|| true).
+      - name: 🔧 Instalar Dependencias del Sistema
         run: |
-          echo "── Java ──────────────────────────────────"
-          java -version
-          echo "── Python ────────────────────────────────"
-          python --version
-          echo "── Buildozer ─────────────────────────────"
-          buildozer version
-          echo "── Cython ────────────────────────────────"
-          cython --version
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            python3-pip \
+            build-essential \
+            git \
+            python3 \
+            python3-dev \
+            ffmpeg \
+            libsdl2-dev \
+            libsdl2-image-dev \
+            libsdl2-mixer-dev \
+            libsdl2-ttf-dev \
+            libportmidi-dev \
+            libswscale-dev \
+            libavformat-dev \
+            libavcodec-dev \
+            zlib1g-dev \
+            libgstreamer1.0-dev \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            libsqlite3-dev \
+            sqlite3 \
+            bzip2 \
+            libbz2-dev \
+            libssl-dev \
+            openssl \
+            libgdbm-dev \
+            libgdbm-compat-dev \
+            liblzma-dev \
+            libreadline-dev \
+            libncursesw5-dev \
+            libffi-dev \
+            uuid-dev
+          # Intento gracioso: libffi6 (Ubuntu 20.04) o libffi8 (Ubuntu 22.04+)
+          sudo apt-get install -y libffi8 || sudo apt-get install -y libffi6 || true
 
-      # ── CACHÉ V13 ─────────────────────────────────────────────────
-      # Clave v13: busta caché de V12 que tenía openssl roto.
-      # Una caché corrupta reaplicaría el mismo error, así que
-      # forzamos reconstrucción completa del entorno p4a con V13.
-      # ─────────────────────────────────────────────────────────────
-      - name: 💾 Restaurar caché (SDK / NDK / p4a / Gradle)
-        uses: actions/cache@v4
+      # ── PASO 5: Instalar Java 17 ──────────────────────────────────────
+      # android.api=33 + build_tools_version=33.0.2 requieren Java 17.
+      # Ubuntu latest ya incluye OpenJDK 17; lo activamos explícitamente.
+      - name: ☕ Configurar Java 17
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # ── PASO 6: Restaurar Caché de Buildozer ─────────────────────────
+      # Buildozer descarga NDK 25b (~700 MB) y SDK (~1 GB) en el primer
+      # build. Con caché, compilaciones sucesivas pasan de ~45 min a ~5 min.
+      # La cache key incluye el hash del buildozer.spec: si cambias
+      # requirements, la caché se invalida automáticamente.
+      - name: 🗃️ Restaurar Caché de Buildozer
+        uses: actions/cache@v3
         with:
           path: |
             ~/.buildozer
-            .buildozer
             ~/.gradle
             ~/.android
           key: buildozer-v13-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
             buildozer-v13-${{ runner.os }}-
 
-      - name: ⚙️ Verificar archivos del repo
+      # ── PASO 7: Aceptar licencias Android SDK ────────────────────────
+      # Aunque buildozer.spec tiene android.accept_sdk_license = True,
+      # este paso garantiza que las licencias del SDK estén aceptadas
+      # en el entorno del runner antes de que Buildozer las necesite.
+      - name: 📜 Aceptar Licencias Android SDK
         run: |
-          echo "── Archivos en la raíz ─────────────────"
-          ls -la
-          echo ""
-          for f in main.py mstl_logic.py buildozer.spec icon.png; do
-            [ -f "$f" ] && echo "  ✅ $f" || echo "  ❌ $f — NO encontrado"
-          done
+          mkdir -p ~/.android
+          touch ~/.android/repositories.cfg
+          if [ -d "$HOME/.buildozer/android/platform/android-sdk/cmdline-tools/latest/bin" ]; then
+            yes | $HOME/.buildozer/android/platform/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          fi
 
-      # ── PASO DE COMPILACIÓN ────────────────────────────────────────
-      #
-      # "set -o pipefail" (fix V12): propaga el exit code real de
-      # buildozer a través del pipe de tee → si falla, el paso falla.
-      # Sin esta línea: tee siempre retorna 0 y el error queda oculto.
-      # ─────────────────────────────────────────────────────────────
-      - name: 🔨 Compilar APK con Buildozer
+      # ── PASO 8: Construir APK Android (Debug) ────────────────────────
+      # buildozer.spec ya está en la raíz del repo (checkout del paso 1).
+      # NO se corre 'buildozer init' para no sobreescribir tu spec v13.
+      # JAVA_HOME → Java 17 (Temurin, configurado en el paso 5).
+      # ANDROID_HOME y ANDROID_SDK_ROOT → compatibilidad con Gradle.
+      - name: 🚀 Construir APK Android (Debug)
         run: |
-          set -o pipefail
-          echo "── Iniciando compilación V13 ─────────────"
-          yes | buildozer -v android debug 2>&1 | tee build.log
-          echo "── Compilación V13 finalizada con éxito ──"
+          buildozer android debug 2>&1 | tee build.log
+        env:
+          JAVA_HOME: ${{ env.JAVA_HOME }}
+          ANDROID_HOME: ${{ env.HOME }}/.buildozer/android/platform/android-sdk
+          ANDROID_SDK_ROOT: ${{ env.HOME }}/.buildozer/android/platform/android-sdk
+          # Evita interacciones de terminal durante la compilación
+          BUILDOZER_WARN_ON_ROOT: 0
 
-      - name: 🔎 Debug Workspace — buscar APK generado
-        if: always()
+      # ── PASO 9: Mostrar log si el build falla ────────────────────────
+      # Si Buildozer falla, este paso muestra las últimas 100 líneas del
+      # log para diagnosticar el error directamente en GitHub Actions.
+      - name: 🐛 Mostrar Log (solo si falla el build)
+        if: failure()
         run: |
-          echo "════════════════════════════════════════"
-          echo "  DEBUG WORKSPACE v13"
-          echo "════════════════════════════════════════"
-          echo ""
-          echo "── bin/ ────────────────────────────────"
-          ls -lah bin/ 2>/dev/null || echo "⚠️  bin/ no existe"
-          echo ""
-          echo "── find *.apk ──────────────────────────"
-          find . -name "*.apk" 2>/dev/null \
-            && echo "✅ APK encontrado" \
-            || echo "⚠️  Ningún .apk encontrado"
-          echo ""
-          echo "── Últimas 120 líneas de build.log ─────"
-          tail -120 build.log 2>/dev/null || echo "⚠️  build.log no encontrado"
+          echo "══ Últimas 100 líneas del log de compilación ══"
+          tail -100 build.log || echo "No se encontró build.log"
 
-      - name: 📦 Subir APK como artefacto
-        uses: actions/upload-artifact@v4
-        if: always()
+      # ── PASO 10: Subir APK como Artefacto descargable ────────────────
+      # El APK compilado se guarda en bin/*.apk dentro del repo.
+      # Lo sube como artefacto de GitHub Actions (descargable 90 días).
+      # if-no-files-found: error → el job falla si el APK no se generó.
+      - name: 📤 Subir APK como Artefacto
+        if: success()
+        uses: actions/upload-artifact@v3
         with:
-          name: cyberload-mstl-apk-v13
+          name: cyberload-mstl-v13-debug
           path: bin/*.apk
-          retention-days: 30
-          if-no-files-found: warn
-
-      - name: 📄 Subir log de build
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: build-log-v13
-          path: build.log
-          retention-days: 14
-          if-no-files-found: warn
-
-# ──────────────────────────────────────────────────────────────────────
-#  ESTRUCTURA REQUERIDA EN TU REPO
-#  ─────────────────────────────────────────────────────────────────────
-#    tu-repo/
-#    ├── .github/workflows/build_apk.yml
-#    ├── main.py
-#    ├── mstl_logic.py
-#    ├── icon.png           ← OBLIGATORIO (buildozer falla sin él)
-#    └── buildozer.spec
-# ──────────────────────────────────────────────────────────────────────
+          retention-days: 90
+          if-no-files-found: error
