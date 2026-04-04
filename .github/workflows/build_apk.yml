@@ -3,6 +3,15 @@
 # ║  Automatiza la construcción del APK con Buildozer en Ubuntu          ║
 # ║                                                                      ║
 # ║  Ruta en tu repo: .github/workflows/build_apk.yml                   ║
+# ║                                                                      ║
+# ║  FIXES v13.1:                                                        ║
+# ║  · Cython 0.29.19 → 3.0.11 (compatible Python 3.9 + p4a moderno)   ║
+# ║  · NDK 25.1 → 25.2.9519653 (versión real del alias "25b")           ║
+# ║  · Symlink NDK → android-ndk-r25b (ruta que p4a espera)            ║
+# ║  · ANDROIDNDK apunta al symlink correcto de Buildozer               ║
+# ║  · ANDROIDMINAPI=26 exportado para evitar conflicto --ndk-api=21    ║
+# ║  · buildozer -v para ver log completo de p4a                        ║
+# ║  · Log de fallo ampliado a 300 líneas                               ║
 # ╚══════════════════════════════════════════════════════════════════════╝
 
 name: Build Android APK
@@ -35,11 +44,20 @@ jobs:
           python-version: '3.9'
 
       # ── PASO 3: Instalar Buildozer y Cython ──────────────────────────
+      #
+      # FIX: Cython actualizado de 0.29.19 → 3.0.11
+      #   · Cython 0.29.x fue la última versión de la serie "legacy"
+      #     diseñada para Python 3.7 y anteriores.
+      #   · p4a moderno (2024+) y pyjnius requieren Cython ≥ 3.0 para
+      #     compilar correctamente las extensiones nativas.
+      #   · Con 0.29.19, la compilación de pyjnius y pillow falla
+      #     silenciosamente durante el paso "p4a create".
+      # ─────────────────────────────────────────────────────────────────
       - name: 📦 Instalar Buildozer y Cython
         run: |
           pip install --upgrade pip
           pip install buildozer
-          pip install cython==0.29.19
+          pip install "cython==3.0.11"
 
       # ── PASO 4: Instalar dependencias del sistema (apt-get) ───────────
       - name: 🔧 Instalar Dependencias del Sistema
@@ -76,7 +94,12 @@ jobs:
             libreadline-dev \
             libncursesw5-dev \
             libffi-dev \
-            uuid-dev
+            uuid-dev \
+            autoconf \
+            automake \
+            libtool \
+            pkg-config \
+            cmake
           sudo apt-get install -y libffi8 || sudo apt-get install -y libffi6 || true
 
       # ── PASO 5: Configurar Java 17 ────────────────────────────────────
@@ -89,59 +112,75 @@ jobs:
       # ── PASO 6: Configurar Android SDK, Build Tools, NDK y symlinks ──
       #
       # ╔═══════════════════════════════════════════════════════════════╗
-      # ║  FIX DEFINITIVO — "sdkmanager not installed"                  ║
+      # ║  FIX DEFINITIVO v13.1 — NDK y rutas de Buildozer             ║
       # ╠═══════════════════════════════════════════════════════════════╣
-      # ║  CAUSA RAÍZ:                                                  ║
-      # ║  Buildozer busca sdkmanager en la ruta LEGACY:                ║
-      # ║    {sdk}/tools/bin/sdkmanager                                 ║
-      # ║  El SDK moderno del runner lo tiene en:                       ║
-      # ║    {sdk}/cmdline-tools/latest/bin/sdkmanager                  ║
+      # ║  CAUSA RAÍZ DEL CRASH EN p4a create:                         ║
+      # ║  1. NDK 25.1.8937393 ≠ alias "25b" (es 25.2.9519653)        ║
+      # ║     Buildozer busca "android-ndk-r25b" pero encuentra        ║
+      # ║     la carpeta "25.1.8937393" → falla p4a create             ║
+      # ║  2. ANDROIDNDK apuntaba al SDK del sistema, no al symlink     ║
+      # ║     ~/.buildozer/.../android-ndk-r25b que usa p4a            ║
+      # ║  3. minapi=26 en spec vs --ndk-api=21 que lanzaba p4a        ║
       # ║                                                               ║
-      # ║  SOLUCIÓN (4 partes):                                         ║
-      # ║  1. Instalar build-tools;33.0.2, android-33 y NDK 25b.       ║
+      # ║  SOLUCIÓN (5 partes):                                         ║
+      # ║  1. Instalar NDK 25.2.9519653 (versión real del alias 25b)   ║
       # ║  2. Crear symlink SDK: ~/.buildozer/.../android-sdk           ║
-      # ║     → /usr/local/lib/android/sdk                             ║
-      # ║  3. Crear symlink LEGACY: {sdk}/tools/bin/sdkmanager          ║
-      # ║     → {sdk}/cmdline-tools/latest/bin/sdkmanager              ║
-      # ║     (Fix directo del error "sdkmanager not installed")        ║
-      # ║  4. Crear symlink LEGACY: {sdk}/tools/bin/avdmanager          ║
-      # ║     (Previene error encadenado en pasos posteriores)          ║
+      # ║  3. Crear symlink NDK: ~/.buildozer/.../android-ndk-r25b     ║
+      # ║     → apuntando al NDK 25.2 recién instalado                 ║
+      # ║  4. Crear symlinks LEGACY tools/bin/ (sdkmanager/avdmanager) ║
+      # ║  5. Exportar ANDROIDNDK al symlink de Buildozer (no al SDK)  ║
       # ╚═══════════════════════════════════════════════════════════════╝
       - name: 📱 Configurar Android SDK, Build Tools, NDK y Symlinks
         run: |
           ANDROID_SDK=/usr/local/lib/android/sdk
           SDKMANAGER="$ANDROID_SDK/cmdline-tools/latest/bin/sdkmanager"
-          NDK_VERSION="25.1.8937393"
-          NDK_PATH="$ANDROID_SDK/ndk/$NDK_VERSION"
 
-          # ── [1/5] Aceptar licencias ───────────────────────────────
-          echo "══ [1/5] Aceptando licencias del SDK ══"
+          # FIX: Versión numérica real del alias "25b"
+          # "25b" corresponde exactamente a 25.2.9519653 en el repositorio de Google.
+          # La versión 25.1.8937393 es "25a" — nombre diferente → ruta diferente.
+          NDK_VERSION="25.2.9519653"
+          NDK_ALIAS="android-ndk-r25b"
+          NDK_PATH_SDK="$ANDROID_SDK/ndk/$NDK_VERSION"
+          NDK_SYMLINK="$HOME/.buildozer/android/platform/$NDK_ALIAS"
+
+          # ── [1/6] Aceptar licencias ───────────────────────────────
+          echo "══ [1/6] Aceptando licencias del SDK ══"
           yes | "$SDKMANAGER" --licenses || true
 
-          # ── [2/5] Instalar build-tools, plataforma y NDK ─────────
-          echo "══ [2/5] Instalando build-tools;33.0.2, android-33 y NDK 25b ══"
+          # ── [2/6] Instalar build-tools, plataforma y NDK ─────────
+          echo "══ [2/6] Instalando build-tools;33.0.2, android-33 y NDK 25.2 ══"
           "$SDKMANAGER" \
             "build-tools;33.0.2" \
             "platforms;android-33" \
             "platform-tools" \
             "ndk;$NDK_VERSION"
 
-          # ── [3/5] Symlink SDK para Buildozer ─────────────────────
-          echo "══ [3/5] Creando symlink SDK para Buildozer ══"
+          # ── [3/6] Symlink SDK para Buildozer ─────────────────────
+          echo "══ [3/6] Creando symlink SDK para Buildozer ══"
           mkdir -p "$HOME/.buildozer/android/platform"
           if [ ! -e "$HOME/.buildozer/android/platform/android-sdk" ]; then
             ln -s "$ANDROID_SDK" "$HOME/.buildozer/android/platform/android-sdk"
             echo "✅ Symlink creado: ~/.buildozer/.../android-sdk → $ANDROID_SDK"
           else
-            echo "ℹ️  Symlink ya existe (cache hit)"
+            echo "ℹ️  Symlink SDK ya existe (cache hit)"
           fi
 
-          # ── [4/5] Symlinks LEGACY tools/bin/ ─────────────────────
-          # Buildozer busca sdkmanager y avdmanager en tools/bin/
-          # (ruta antigua) pero el SDK moderno los tiene en
-          # cmdline-tools/latest/bin/. Creamos los symlinks de
-          # compatibilidad para que Buildozer los encuentre.
-          echo "══ [4/5] Creando symlinks de compatibilidad tools/bin/ ══"
+          # ── [4/6] Symlink NDK → android-ndk-r25b ─────────────────
+          # CRÍTICO: p4a busca el NDK en la ruta:
+          #   ~/.buildozer/android/platform/android-ndk-r25b
+          # Si no existe ese symlink, p4a intenta descargar el NDK
+          # desde internet durante el build y falla en CI.
+          # ANDROIDNDK debe apuntar a este symlink, NO a la ruta del SDK.
+          echo "══ [4/6] Creando symlink NDK → android-ndk-r25b ══"
+          if [ ! -e "$NDK_SYMLINK" ]; then
+            ln -s "$NDK_PATH_SDK" "$NDK_SYMLINK"
+            echo "✅ Symlink NDK: $NDK_SYMLINK → $NDK_PATH_SDK"
+          else
+            echo "ℹ️  Symlink NDK ya existe (cache hit)"
+          fi
+
+          # ── [5/6] Symlinks LEGACY tools/bin/ ─────────────────────
+          echo "══ [5/6] Creando symlinks de compatibilidad tools/bin/ ══"
           sudo mkdir -p "$ANDROID_SDK/tools/bin"
 
           sudo ln -sf \
@@ -159,8 +198,9 @@ jobs:
           echo "✅ tools/bin/sdkmanager → cmdline-tools/latest/bin/sdkmanager"
           echo "✅ tools/bin/avdmanager → cmdline-tools/latest/bin/avdmanager"
 
-          # ── [5/5] Verificaciones finales ──────────────────────────
-          echo "══ [5/5] Verificaciones finales ══"
+          # ── [6/6] Verificaciones finales ──────────────────────────
+          echo "══ [6/6] Verificaciones finales ══"
+
           echo "── aidl:"
           ls -la "$ANDROID_SDK/build-tools/33.0.2/aidl" \
             && echo "✅ aidl OK" || { echo "❌ aidl NO encontrado"; exit 1; }
@@ -168,16 +208,27 @@ jobs:
           echo "── tools/bin/:"
           ls -la "$ANDROID_SDK/tools/bin/"
 
-          echo "── NDK:"
-          ls -d "$NDK_PATH" \
-            && echo "✅ NDK 25b OK" \
-            || echo "⚠️  NDK no encontrado, Buildozer intentará descargarlo"
+          echo "── NDK (ruta SDK):"
+          ls -d "$NDK_PATH_SDK" \
+            && echo "✅ NDK 25.2 en SDK OK" \
+            || { echo "❌ NDK no encontrado en SDK"; exit 1; }
+
+          echo "── NDK (symlink Buildozer):"
+          ls -d "$NDK_SYMLINK" \
+            && echo "✅ Symlink android-ndk-r25b OK" \
+            || { echo "❌ Symlink NDK faltante"; exit 1; }
 
           # ── Exportar variables a GITHUB_ENV ───────────────────────
-          echo "ANDROID_HOME=$ANDROID_SDK"      >> $GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK"  >> $GITHUB_ENV
-          echo "ANDROIDSDK=$ANDROID_SDK"        >> $GITHUB_ENV
-          echo "ANDROIDNDK=$NDK_PATH"           >> $GITHUB_ENV
+          # CRÍTICO: ANDROIDNDK apunta al SYMLINK de Buildozer,
+          # NO a la ruta del SDK del sistema.
+          # p4a lee ANDROIDNDK para saber dónde está el NDK.
+          echo "ANDROID_HOME=$ANDROID_SDK"          >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK"      >> $GITHUB_ENV
+          echo "ANDROIDSDK=$ANDROID_SDK"            >> $GITHUB_ENV
+          echo "ANDROIDNDK=$NDK_SYMLINK"            >> $GITHUB_ENV
+          echo "ANDROIDAPI=33"                      >> $GITHUB_ENV
+          echo "ANDROIDMINAPI=26"                   >> $GITHUB_ENV
+          echo "PACKAGES_PATH=$HOME/.buildozer/android/packages" >> $GITHUB_ENV
 
           echo "$ANDROID_SDK/build-tools/33.0.2" >> $GITHUB_PATH
           echo "$ANDROID_SDK/platform-tools"     >> $GITHUB_PATH
@@ -196,16 +247,24 @@ jobs:
             buildozer-v13-${{ runner.os }}-
 
       # ── PASO 8: Construir APK Android (Debug) ────────────────────────
+      #
+      # FIX: Agregado flag -v a buildozer para activar verbose mode.
+      # Sin -v, los errores internos de p4a quedan ocultos en el log.
+      # Con -v, verás exactamente qué subcomando de p4a falla y por qué.
+      # ─────────────────────────────────────────────────────────────────
       - name: 🚀 Construir APK Android (Debug)
         run: |
           set -o pipefail
-          buildozer android debug 2>&1 | tee build.log
+          buildozer -v android debug 2>&1 | tee build.log
         env:
           JAVA_HOME: ${{ env.JAVA_HOME }}
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
           ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
           ANDROIDSDK: ${{ env.ANDROIDSDK }}
           ANDROIDNDK: ${{ env.ANDROIDNDK }}
+          ANDROIDAPI: ${{ env.ANDROIDAPI }}
+          ANDROIDMINAPI: ${{ env.ANDROIDMINAPI }}
+          PACKAGES_PATH: ${{ env.PACKAGES_PATH }}
           BUILDOZER_WARN_ON_ROOT: 0
 
       # ── PASO 9: Localizar y copiar APK a carpeta conocida ────────────
@@ -231,11 +290,18 @@ jobs:
           ls -lh artifacts/
 
       # ── PASO 10: Mostrar log si el build falla ───────────────────────
+      # FIX: Ampliado de 150 a 300 líneas para no cortar el error real
+      # de p4a que aparece cientos de líneas antes del final del log.
+      # ─────────────────────────────────────────────────────────────────
       - name: 🐛 Mostrar Log (solo si falla el build)
         if: failure()
         run: |
-          echo "══ Últimas 150 líneas del log ══"
-          tail -150 build.log || echo "No se encontró build.log"
+          echo "══ Últimas 300 líneas del log ══"
+          tail -300 build.log || echo "No se encontró build.log"
+          echo ""
+          echo "══ Buscando errores clave en el log ══"
+          grep -i "error\|failed\|exception\|traceback\|cannot\|no such" build.log \
+            | tail -50 || echo "No se encontraron errores clave"
 
       # ── PASO 11: Subir APK como Artefacto descargable ────────────────
       - name: 📤 Subir APK como Artefacto
