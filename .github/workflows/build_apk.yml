@@ -1,13 +1,12 @@
 # ╔══════════════════════════════════════════════════════════════════════╗
-# ║  CYBERLOAD MSTL — GitHub Actions Workflow v11                       ║
+# ║  CYBERLOAD MSTL — GitHub Actions Workflow v12                       ║
 # ║                                                                      ║
-# ║  FIX DEFINITIVO vs V9/V10:                                          ║
-# ║  · Eliminado el paso manual de "Configurar Android SDK"             ║
-# ║    El paquete sdkmanager "tools" no existe en el SDK moderno        ║
-# ║    → causaba "exit code 1" antes de empezar a compilar.            ║
-# ║  · Buildozer gestiona su propio SDK completamente (diseño original) ║
-# ║  · Eliminado ANDROID_SDK_ROOT del env (confundía a buildozer)      ║
-# ║  · Java 11 mantenido (fix del error JAXB de V10)                   ║
+# ║  Fix vs V11 — APK no se generaba sin error visible:                 ║
+# ║  · Añadido "set -o pipefail" al paso de compilación                 ║
+# ║    yes | buildozer | tee enmascaraba el exit code de buildozer      ║
+# ║    → ahora si buildozer falla el paso muestra error real            ║
+# ║  · Buildozer sigue siendo autónomo (sin SDK manual)                 ║
+# ║  · Java 11 mantenido (fix JAXB de V10)                             ║
 # ╚══════════════════════════════════════════════════════════════════════╝
 
 name: 🤖 Build Cyberload MSTL APK
@@ -24,57 +23,34 @@ permissions:
 
 jobs:
   build-apk:
-    name: 🏗️ Compilar APK (v11 — Buildozer autónomo)
+    name: 🏗️ Compilar APK (v12 — pipefail fix)
     runs-on: ubuntu-22.04
 
     env:
-      # ── Node.js 24 opt-in ─────────────────────────────────────────
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
-      # ── Variables internas de Buildozer ───────────────────────────
-      # BUILDOZER_ANDROID_SDK_ACCEPT_LICENSE:
-      #   Le dice a buildozer que acepte las licencias del SDK
-      #   automáticamente durante su propio proceso de instalación.
-      #   Buildozer lee esta variable y responde "y" a los prompts.
-      #
-      # BUILDOZER_WARN_ON_ROOT:
-      #   Suprime la advertencia de "corriendo como root" que puede
-      #   interrumpir el output verbose en GitHub Actions.
       BUILDOZER_ANDROID_SDK_ACCEPT_LICENSE: "y"
       BUILDOZER_WARN_ON_ROOT: "0"
 
     steps:
 
-      # ── PASO 1: Clonar repositorio ─────────────────────────────────
       - name: 📥 Clonar repositorio
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ── PASO 2: Java 11 (Temurin) ─────────────────────────────────
-      #
       # Java 11 — NO Java 17.
-      # El Android Gradle Plugin 7.x (que buildozer usa internamente)
-      # solo es compatible con Java 11. Con Java 17 el build lanza:
-      # "NoClassDefFoundError: javax/xml/bind/annotation/XmlSchema"
-      # porque JAXB fue eliminado en Java 11+ y AGP 7.x lo necesita.
-      # ─────────────────────────────────────────────────────────────
+      # AGP 7.x (usado por buildozer) solo es compatible con Java 11.
       - name: ☕ Instalar Java 11 (Temurin)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "11"
 
-      # ── PASO 3: Python 3.10 ────────────────────────────────────────
       - name: 🐍 Configurar Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      # ── PASO 4: Dependencias del sistema ──────────────────────────
-      # Lista mínima y estable confirmada para Ubuntu 22.04.
-      # Buildozer verifica estas dependencias al arrancar y falla
-      # si alguna falta. Las instalamos aquí para evitar errores.
       - name: 🔧 Instalar dependencias del sistema
         run: |
           sudo apt-get update -qq
@@ -88,9 +64,7 @@ jobs:
             patchelf libncurses5 libcurl4-openssl-dev
           echo "✅ Dependencias del sistema instaladas"
 
-      # ── PASO 5: Instalar Buildozer y Cython ───────────────────────
-      # Cython 0.29.37 = última de la rama 0.29.x.
-      # Cython 3.x rompe las recetas nativas de python-for-android.
+      # Cython 0.29.37 — NO Cython 3.x (rompe recetas de p4a)
       - name: 📦 Instalar Buildozer y Cython
         run: |
           pip install --upgrade pip setuptools wheel
@@ -98,24 +72,18 @@ jobs:
           pip install buildozer virtualenv
           echo "✅ Buildozer $(buildozer version) + Cython 0.29.37 listos"
 
-      # ── PASO 6: Verificar entorno ──────────────────────────────────
       - name: 🔍 Verificar versiones del entorno
         run: |
-          echo "── Java ────────────────────────────────"
+          echo "── Java ──────────────────────────────────"
           java -version
-          echo "── Python ──────────────────────────────"
+          echo "── Python ────────────────────────────────"
           python --version
-          echo "── Buildozer ───────────────────────────"
+          echo "── Buildozer ─────────────────────────────"
           buildozer version
-          echo "── Cython ──────────────────────────────"
+          echo "── Cython ────────────────────────────────"
           cython --version
-          echo "── JAVA_HOME ───────────────────────────"
-          echo "$JAVA_HOME"
 
-      # ── PASO 7: Restaurar caché ────────────────────────────────────
-      # Key v11- descarta la caché corrupta de V10.
-      # La caché de V10 fue generada durante un build fallido con
-      # SDK instalado manualmente → puede contener archivos rotos.
+      # Key v12- → reset de caché de V11 (generada con build incompleto)
       - name: 💾 Restaurar caché (SDK / NDK / p4a / Gradle)
         uses: actions/cache@v4
         with:
@@ -124,99 +92,72 @@ jobs:
             .buildozer
             ~/.gradle
             ~/.android
-          key: buildozer-v11-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          key: buildozer-v12-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
-            buildozer-v11-${{ runner.os }}-
+            buildozer-v12-${{ runner.os }}-
 
-      # ── PASO 8: Verificar archivos del repo ───────────────────────
       - name: ⚙️ Verificar archivos del repo
         run: |
           echo "── Archivos en la raíz ─────────────────"
           ls -la
           echo ""
-          echo "── Archivos requeridos por buildozer.spec ──"
           for f in main.py mstl_logic.py buildozer.spec icon.png; do
-            if [ -f "$f" ]; then
-              echo "  ✅ $f"
-            else
-              echo "  ❌ $f — NO encontrado"
-            fi
+            [ -f "$f" ] && echo "  ✅ $f" || echo "  ❌ $f — NO encontrado"
           done
 
-      # ── PASO 9: COMPILAR APK ───────────────────────────────────────
+      # ── PASO DE COMPILACIÓN — FIX CRÍTICO v12 ─────────────────────
       #
-      # ESTRATEGIA CENTRAL v11 — BUILDOZER AUTÓNOMO:
+      # PROBLEMA DE V11:
+      #   yes | buildozer -v android debug 2>&1 | tee build.log
+      #   El exit code de este pipeline es el de "tee" (siempre 0).
+      #   Si buildozer falla internamente, el paso reporta "success"
+      #   y GitHub Actions no muestra ningún error → APK nunca se genera
+      #   pero el workflow termina "verde".
       #
-      # Buildozer gestiona su propio SDK completamente:
-      #   · Descarga Android cmdline-tools en ~/.buildozer/
-      #   · Instala el SDK, NDK y build-tools en esa misma ruta
-      #   · Acepta las licencias automáticamente (BUILDOZER_ANDROID_SDK_ACCEPT_LICENSE=y)
-      #   · Configura las rutas internas correctamente sin conflictos
-      #
-      # Por qué eliminamos el paso manual de SDK (V9/V10):
-      #   · sdkmanager "tools" no existe en el SDK moderno → exit code 1
-      #   · Instalar SDK manualmente crea conflictos de rutas con buildozer
-      #   · Buildozer fue diseñado para hacer esto por sí mismo
-      #
-      # "yes |" responde automáticamente a cualquier prompt residual.
-      # "-v" muestra cada paso para diagnóstico si algo falla.
-      # "2>&1 | tee build.log" captura stdout + stderr simultáneamente.
-      #
-      # TIEMPOS ESTIMADOS:
-      #   · Run #1 sin caché : 40 – 60 minutos
-      #   · Run #2+ con caché:  8 – 15 minutos
+      # FIX v12:
+      #   "set -o pipefail" hace que el pipeline propague el exit code
+      #   del primer comando que falle (buildozer en este caso).
+      #   Si buildozer retorna 1, el paso entero retorna 1 → error visible.
       # ─────────────────────────────────────────────────────────────
       - name: 🔨 Compilar APK con Buildozer
         run: |
+          set -o pipefail
           echo "── Iniciando compilación ───────────────"
           yes | buildozer -v android debug 2>&1 | tee build.log
-          echo "── Compilación finalizada ───────────────"
+          echo "── Compilación finalizada con éxito ─────"
 
-      # ── PASO 10: DEBUG WORKSPACE ───────────────────────────────────
       - name: 🔎 Debug Workspace — buscar APK generado
         if: always()
         run: |
           echo "════════════════════════════════════════"
-          echo "  DEBUG WORKSPACE v11"
+          echo "  DEBUG WORKSPACE v12"
           echo "════════════════════════════════════════"
-
           echo ""
           echo "── bin/ ────────────────────────────────"
           ls -lah bin/ 2>/dev/null || echo "⚠️  bin/ no existe"
-
           echo ""
-          echo "── find *.apk en workspace completo ────"
+          echo "── find *.apk ──────────────────────────"
           find . -name "*.apk" 2>/dev/null \
-            && echo "✅ APK(s) encontrado(s)" \
+            && echo "✅ APK encontrado" \
             || echo "⚠️  Ningún .apk encontrado"
-
-          echo ""
-          echo "── Árbol del workspace (profundidad 2) ─"
-          find . -maxdepth 2 \
-            -not -path './.buildozer/*' \
-            -not -path './.git/*' \
-            | sort
-
           echo ""
           echo "── Últimas 100 líneas de build.log ─────"
           tail -100 build.log 2>/dev/null || echo "⚠️  build.log no encontrado"
 
-      # ── PASO 11: Subir APK como artefacto ─────────────────────────
       - name: 📦 Subir APK como artefacto
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: cyberload-mstl-apk-v11
+          name: cyberload-mstl-apk-v12
           path: bin/*.apk
           retention-days: 30
           if-no-files-found: warn
 
-      # ── PASO 12: Subir log de build ───────────────────────────────
-      - name: 📄 Subir log de build (siempre)
+      - name: 📄 Subir log de build
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: build-log-v11
+          name: build-log-v12
           path: build.log
           retention-days: 14
           if-no-files-found: warn
@@ -225,20 +166,9 @@ jobs:
 #  ESTRUCTURA REQUERIDA EN TU REPO
 #  ─────────────────────────────────────────────────────────────────────
 #    tu-repo/
-#    ├── .github/
-#    │   └── workflows/
-#    │       └── build_apk.yml
+#    ├── .github/workflows/build_apk.yml
 #    ├── main.py
 #    ├── mstl_logic.py
-#    ├── icon.png              ← OBLIGATORIO (PNG de cualquier tamaño)
+#    ├── icon.png       ← OBLIGATORIO
 #    └── buildozer.spec
-#
-#  TIEMPOS ESPERADOS:
-#    · Run #1 sin caché : 40 – 60 minutos
-#    · Run #2+ con caché:  8 – 15 minutos
-#
-#  SI FALLA:
-#    · Descarga "build-log-v11" desde la sección Artifacts del run
-#    · Las últimas 100 líneas del log aparecen en "Debug Workspace"
-#    · Busca la primera línea con "ERROR" o "Exception"
 # ──────────────────────────────────────────────────────────────────────
