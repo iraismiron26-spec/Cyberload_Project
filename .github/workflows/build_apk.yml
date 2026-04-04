@@ -19,6 +19,11 @@ jobs:
     name: 🏗️ Build Cyberload MSTL v13 APK
     runs-on: ubuntu-latest
 
+    # ── Fix warning: Node.js 20 deprecado ────────────────────────────
+    # Fuerza todas las actions (checkout, cache, etc.) a usar Node 24.
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
     steps:
 
       # ── PASO 1: Clonar el repositorio ────────────────────────────────
@@ -83,7 +88,51 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      # ── PASO 6: Restaurar Caché de Buildozer ─────────────────────────
+      # ── PASO 6: Configurar Android SDK y Build Tools ─────────────────
+      # CRÍTICO — Fix del error "Aidl not found":
+      #
+      # 'aidl' es un binario que viene dentro de build-tools/33.0.2.
+      # El runner de GitHub tiene el SDK pre-instalado en:
+      #   /usr/local/lib/android/sdk
+      # pero no siempre incluye la versión exacta de build-tools
+      # que el buildozer.spec requiere (33.0.2).
+      #
+      # Este paso:
+      #   1. Apunta ANDROID_HOME al SDK pre-instalado del runner.
+      #   2. Instala build-tools;33.0.2, platforms;android-33 y
+      #      platform-tools via sdkmanager.
+      #   3. Añade build-tools/33.0.2 al PATH → 'aidl' queda accesible.
+      #   4. Acepta todas las licencias del SDK.
+      #   5. Verifica que 'aidl' existe antes de que Buildozer arranque.
+      - name: 📱 Configurar Android SDK y Build Tools
+        run: |
+          export ANDROID_HOME=/usr/local/lib/android/sdk
+          export ANDROID_SDK_ROOT=$ANDROID_HOME
+
+          # Registrar variables en el entorno de pasos posteriores
+          echo "ANDROID_HOME=$ANDROID_HOME"         >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+
+          # Añadir build-tools y platform-tools al PATH global del runner
+          echo "$ANDROID_HOME/build-tools/33.0.2"  >> $GITHUB_PATH
+          echo "$ANDROID_HOME/platform-tools"       >> $GITHUB_PATH
+
+          # Aceptar todas las licencias del SDK
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+
+          # Instalar las herramientas requeridas por buildozer.spec
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            "build-tools;33.0.2" \
+            "platforms;android-33" \
+            "platform-tools"
+
+          # Verificar que 'aidl' existe y es ejecutable
+          echo "══ Verificando 'aidl' ══"
+          ls -la "$ANDROID_HOME/build-tools/33.0.2/aidl" \
+            && echo "✅ aidl encontrado correctamente" \
+            || echo "❌ aidl NO encontrado — revisar build-tools"
+
+      # ── PASO 7: Restaurar Caché de Buildozer ─────────────────────────
       - name: 🗃️ Restaurar Caché de Buildozer
         uses: actions/cache@v4
         with:
@@ -95,52 +144,35 @@ jobs:
           restore-keys: |
             buildozer-v13-${{ runner.os }}-
 
-      # ── PASO 7: Aceptar Licencias Android SDK ────────────────────────
-      - name: 📜 Aceptar Licencias Android SDK
-        run: |
-          mkdir -p ~/.android
-          touch ~/.android/repositories.cfg
-          if [ -d "$HOME/.buildozer/android/platform/android-sdk/cmdline-tools/latest/bin" ]; then
-            yes | $HOME/.buildozer/android/platform/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses || true
-          fi
-
       # ── PASO 8: Construir APK Android (Debug) ────────────────────────
-      # CRÍTICO: 'set -o pipefail' hace que el paso falle con el exit
-      # code real de buildozer y no el de 'tee' (que siempre es 0).
+      # set -o pipefail → el paso falla con el exit code real de
+      # buildozer y no el de 'tee' (que siempre devuelve 0).
       - name: 🚀 Construir APK Android (Debug)
         run: |
           set -o pipefail
           buildozer android debug 2>&1 | tee build.log
         env:
           JAVA_HOME: ${{ env.JAVA_HOME }}
-          ANDROID_HOME: ${{ env.HOME }}/.buildozer/android/platform/android-sdk
-          ANDROID_SDK_ROOT: ${{ env.HOME }}/.buildozer/android/platform/android-sdk
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
           BUILDOZER_WARN_ON_ROOT: 0
 
-      # ── PASO 9: Localizar APK y copiar a carpeta conocida ────────────
-      # Buildozer puede guardar el APK en rutas distintas según versión:
-      #   · bin/*.apk  (ruta estándar)
-      #   · .buildozer/android/platform/build-*/dists/*/bin/*.apk
-      # Este paso busca en TODO el workspace y copia a artifacts/.
+      # ── PASO 9: Localizar y copiar APK a carpeta conocida ────────────
       - name: 🔎 Localizar y Copiar APK
         run: |
           echo "══ Buscando archivos .apk en el workspace ══"
           find "$GITHUB_WORKSPACE" -name "*.apk" 2>/dev/null || true
           find "$HOME/.buildozer" -name "*.apk" 2>/dev/null || true
 
-          echo "══ Copiando APK(s) encontrado(s) a artifacts/ ══"
+          echo "══ Copiando APK(s) a artifacts/ ══"
           mkdir -p artifacts
 
-          # Buscar en bin/ primero (ruta estándar de Buildozer)
           if ls "$GITHUB_WORKSPACE"/bin/*.apk 1>/dev/null 2>&1; then
             cp "$GITHUB_WORKSPACE"/bin/*.apk artifacts/
             echo "✅ APK copiado desde bin/"
-
-          # Buscar en rutas internas de .buildozer como fallback
           elif find "$HOME/.buildozer" -name "*.apk" | grep -q .; then
             find "$HOME/.buildozer" -name "*.apk" -exec cp {} artifacts/ \;
             echo "✅ APK copiado desde .buildozer interno"
-
           else
             echo "❌ No se encontró ningún .apk — el build falló"
             exit 1
@@ -157,7 +189,6 @@ jobs:
           tail -150 build.log || echo "No se encontró build.log"
 
       # ── PASO 11: Subir APK como Artefacto descargable ────────────────
-      # Sube desde artifacts/ — ruta garantizada por el Paso 9.
       - name: 📤 Subir APK como Artefacto
         uses: actions/upload-artifact@v4
         with:
