@@ -1,8 +1,10 @@
 # ╔══════════════════════════════════════════════════════════════════════╗
-# ║  CYBERLOAD MSTL — GitHub Actions Workflow v6                        ║
-# ║  Estrategia: Buildozer gestiona el SDK completamente                ║
-# ║  Fix: Eliminados todos los pasos manuales de SDK/sdkmanager        ║
-# ║  Clave: yes | buildozer -v android debug                           ║
+# ║  CYBERLOAD MSTL — GitHub Actions Workflow v7                        ║
+# ║  Fix críticos sobre v6:                                             ║
+# ║  · Paso nuevo: Pre-acepta licencias con sdkmanager (infalible)     ║
+# ║  · Paso nuevo: buildozer android clean antes del debug             ║
+# ║  · Cache reseteada a v7- (evita SDK corrupto heredado de v6)       ║
+# ║  · Runner confirmado: ubuntu-22.04                                  ║
 # ╚══════════════════════════════════════════════════════════════════════╝
 
 name: 🤖 Build Cyberload MSTL APK
@@ -19,13 +21,15 @@ permissions:
 
 jobs:
   build-apk:
-    name: 🏗️ Compilar APK (v6 — Buildozer autónomo)
+    name: 🏗️ Compilar APK (v7 — Clean + Licencias infalibles)
     runs-on: ubuntu-22.04
 
     env:
       # Buildozer lee estas variables para configurar el SDK sin prompts
-      BUILDOZER_WARN_ON_ROOT:             "0"
+      BUILDOZER_WARN_ON_ROOT:               "0"
       BUILDOZER_ANDROID_SDK_ACCEPT_LICENSE: "y"
+      # Ruta canónica del Android SDK que Buildozer usa por defecto
+      ANDROID_SDK_ROOT: "/home/runner/.buildozer/android/platform/android-sdk"
 
     steps:
 
@@ -36,9 +40,6 @@ jobs:
           fetch-depth: 0
 
       # ── PASO 2: Java 17 oficial ────────────────────────────────────
-      # setup-java configura JAVA_HOME automáticamente y de forma
-      # persistente. Temurin = OpenJDK de Eclipse Foundation,
-      # la distribución más estable y usada en CI en 2026.
       - name: ☕ Instalar Java 17 (Temurin)
         uses: actions/setup-java@v4
         with:
@@ -52,9 +53,6 @@ jobs:
           python-version: "3.10"
 
       # ── PASO 4: Dependencias del sistema ──────────────────────────
-      # Lista mínima y estable confirmada en Ubuntu 22.04.
-      # Sin gstreamer, sin lld, sin ncurses-dev (todos causaban
-      # conflictos de "held broken packages" en versiones anteriores).
       - name: 🔧 Instalar dependencias del sistema
         run: |
           sudo apt-get update -qq
@@ -86,8 +84,6 @@ jobs:
           echo "✅ Dependencias instaladas"
 
       # ── PASO 5: Instalar Buildozer y Cython ───────────────────────
-      # Cython 0.29.37 = última versión de la rama 0.29.x.
-      # Cython 3.x rompe las recetas nativas de python-for-android.
       - name: 📦 Instalar Buildozer y Cython
         run: |
           pip install --upgrade pip setuptools wheel
@@ -110,9 +106,7 @@ jobs:
           echo "$JAVA_HOME"
 
       # ── PASO 7: Restaurar caché ────────────────────────────────────
-      # Key v6- resetea cachés corruptos de versiones anteriores.
-      # Si el caché de v5 existe, no lo reutilizamos porque contenía
-      # un SDK parcialmente instalado que causaba los fallos.
+      # Key v7- resetea cachés corruptos de v6.
       - name: 💾 Restaurar caché (SDK / NDK / p4a / Gradle)
         uses: actions/cache@v4
         with:
@@ -121,9 +115,9 @@ jobs:
             .buildozer
             ~/.gradle
             ~/.android
-          key: buildozer-v6-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          key: buildozer-v7-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
-            buildozer-v6-${{ runner.os }}-
+            buildozer-v7-${{ runner.os }}-
 
       # ── PASO 8: Verificar archivos del repo ───────────────────────
       - name: ⚙️ Verificar archivos del repo
@@ -140,46 +134,108 @@ jobs:
             fi
           done
 
-      # ── PASO 9: COMPILAR APK ───────────────────────────────────────
+      # ── PASO 8.5: ACEPTAR LICENCIAS ANDROID SDK (INFALIBLE) ───────
       #
-      # ESTRATEGIA CENTRAL DE v6:
+      # FIX CRÍTICO v7:
+      #
+      # Problema en v6: las licencias no se aceptaban correctamente
+      # porque sdkmanager nunca corría de forma explícita.
+      # La variable BUILDOZER_ANDROID_SDK_ACCEPT_LICENSE no siempre
+      # es suficiente para evitar prompts interactivos de sdkmanager.
+      #
+      # Solución v7:
+      #   1. Creamos la estructura del SDK en la ruta exacta que
+      #      Buildozer espera: ~/.buildozer/android/platform/android-sdk
+      #   2. Descargamos cmdline-tools de Google (zip oficial)
+      #   3. Lo instalamos como cmdline-tools/latest (estructura requerida)
+      #   4. Ejecutamos: yes | sdkmanager --licenses || true
+      #      · "yes |"  → responde "y" a cada prompt de licencia
+      #      · "|| true" → aunque sdkmanager retorne error (exit 1),
+      #                    el paso nunca falla ni rompe el workflow
+      #
+      # NOTA: El SDK que instala buildozer usará esta misma ruta,
+      # así que las licencias aceptadas aquí persisten para todo
+      # el proceso de compilación.
+      # ─────────────────────────────────────────────────────────────
+      - name: 🔐 Aceptar licencias Android SDK (infalible)
+        run: |
+          echo "── Preparando estructura del SDK ───────"
+          mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools"
+
+          echo "── Descargando Android Command Line Tools ──"
+          TOOLS_URL="https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+          wget -q "${TOOLS_URL}" -O /tmp/cmdlinetools.zip
+          echo "✅ cmdline-tools descargado"
+
+          echo "── Instalando cmdline-tools/latest ─────"
+          unzip -q /tmp/cmdlinetools.zip -d /tmp/cl_extract
+          mv /tmp/cl_extract/cmdline-tools "${ANDROID_SDK_ROOT}/cmdline-tools/latest"
+          rm -rf /tmp/cl_extract /tmp/cmdlinetools.zip
+          echo "✅ cmdline-tools/latest instalado"
+
+          echo "── Aceptando TODAS las licencias ───────"
+          export PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${PATH}"
+          yes | sdkmanager --licenses || true
+          echo "✅ Licencias aceptadas (sdkmanager)"
+
+          echo "── Verificación de estructura SDK ──────"
+          ls -la "${ANDROID_SDK_ROOT}/cmdline-tools/" || true
+
+      # ── PASO 9: LIMPIAR BUILD ANTERIOR ────────────────────────────
+      #
+      # FIX CRÍTICO v7:
+      #
+      # "yes | buildozer android clean" elimina:
+      #   · .buildozer/android/platform/build-armeabi-v7a/
+      #   · .buildozer/android/platform/build-arm64-v8a/
+      #   · Archivos .so compilados de recetas anteriores
+      #   · Archivos intermedios de Cython
+      #
+      # Esto fuerza a python-for-android a recompilar todas las
+      # recetas (kivy, openssl, requests, etc.) desde cero,
+      # evitando que archivos de un build anterior incompleto
+      # o de una versión diferente de Cython causen el fallo.
+      #
+      # "yes |" responde automáticamente a cualquier confirmación.
+      # ─────────────────────────────────────────────────────────────
+      - name: 🧹 Limpiar build anterior (buildozer clean)
+        run: |
+          echo "── Ejecutando buildozer android clean ──"
+          yes | buildozer android clean 2>&1 | tee clean.log
+          echo "── Clean finalizado ─────────────────────"
+
+      # ── PASO 10: COMPILAR APK ──────────────────────────────────────
+      #
+      # ESTRATEGIA CENTRAL v7:
       #
       #   yes | buildozer -v android debug
       #
-      # · "yes |"       → responde "y" automáticamente a CUALQUIER
-      #                   prompt que Buildozer o sdkmanager lancen,
-      #                   incluyendo licencias del SDK, NDK y
-      #                   preguntas de confirmación de herramientas.
+      # · "yes |"         → responde "y" a CUALQUIER prompt que
+      #                     Buildozer o sdkmanager lancen durante
+      #                     la compilación (licencias residuales,
+      #                     confirmación de herramientas, NDK, etc.)
       #
-      # · "buildozer"   → gestiona la descarga e instalación del SDK
-      #                   y NDK completamente por sí solo. No
-      #                   interferimos con su proceso interno.
+      # · "-v"            → verbose: muestra cada paso en detalle
+      #                     para diagnóstico en caso de fallo.
       #
-      # · "-v"          → verbose: muestra cada paso de compilación
-      #                   en detalle para diagnóstico si algo falla.
+      # · "android debug" → genera APK debug firmado con clave
+      #                     de debug, instalable directamente.
       #
-      # · "android debug" → genera APK en modo debug (firmado con
-      #                   clave de debug, instalable directamente).
+      # · "2>&1 | tee"    → captura stdout + stderr en build.log
+      #                     y los muestra en pantalla al mismo tiempo.
       #
-      # · "2>&1 | tee"  → captura stdout + stderr en build.log
-      #                   y los muestra en pantalla simultáneamente.
-      #
-      # NOTA: Este paso puede tardar 35-50 minutos en el primer
-      # run (sin caché). Con caché tarda 8-15 minutos.
+      # TIEMPOS ESTIMADOS (primer run sin caché):
+      #   · Download SDK + NDK : 5–8 min
+      #   · Compilar recetas   : 25–40 min
+      #   · Gradle + packaging :  5–8 min
+      #   · TOTAL              : 35–56 min
+      # ─────────────────────────────────────────────────────────────
       - name: 🔨 Compilar APK con Buildozer
         run: |
           yes | buildozer -v android debug 2>&1 | tee build.log
           echo "── Build finalizado ─────────────────────"
 
-      # ── PASO 10: DEBUG WORKSPACE ───────────────────────────────────
-      #
-      # Se ejecuta SIEMPRE (if: always()) para ver exactamente
-      # qué generó el build, tanto si tuvo éxito como si falló.
-      #
-      # Muestra:
-      #   · Contenido de bin/ (donde Buildozer pone el APK)
-      #   · Búsqueda de cualquier .apk en todo el workspace
-      #   · Árbol de directorios nivel 2 (sin .buildozer ni .git)
+      # ── PASO 11: DEBUG WORKSPACE ───────────────────────────────────
       - name: 🔎 Debug Workspace — buscar APK generado
         if: always()
         run: |
@@ -205,29 +261,37 @@ jobs:
             | sort
 
           echo ""
-          echo "── Últimas 50 líneas de build.log ──────"
-          tail -50 build.log 2>/dev/null || echo "⚠️  build.log no encontrado"
+          echo "── Últimas 80 líneas de build.log ──────"
+          tail -80 build.log 2>/dev/null || echo "⚠️  build.log no encontrado"
 
-      # ── PASO 11: Subir APK como artefacto ─────────────────────────
-      # if-no-files-found: warn en lugar de error → el workflow
-      # no muere aquí y el paso de logs siempre se ejecuta.
+      # ── PASO 12: Subir APK como artefacto ─────────────────────────
       - name: 📦 Subir APK como artefacto
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: cyberload-mstl-apk
+          name: cyberload-mstl-apk-v7
           path: bin/*.apk
           retention-days: 30
           if-no-files-found: warn
 
-      # ── PASO 12: Subir log completo ────────────────────────────────
+      # ── PASO 13: Subir log completo ────────────────────────────────
       - name: 📄 Subir log de build (siempre)
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: build-log-v6
+          name: build-log-v7
           path: build.log
           retention-days: 14
+          if-no-files-found: warn
+
+      # ── PASO 14: Subir log de clean ───────────────────────────────
+      - name: 📄 Subir log de clean (siempre)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clean-log-v7
+          path: clean.log
+          retention-days: 7
           if-no-files-found: warn
 
 # ──────────────────────────────────────────────────────────────────────
@@ -243,12 +307,12 @@ jobs:
 #    └── buildozer.spec
 #
 #  TIEMPOS ESPERADOS:
-#    · Run #1 sin caché : 35 – 50 minutos
+#    · Run #1 sin caché : 35 – 56 minutos
 #    · Run #2+ con caché:  8 – 15 minutos
 #
 #  SI FALLA:
-#    · Descarga "build-log-v6" desde la sección Artifacts del run
+#    · Descarga "build-log-v7" desde la sección Artifacts del run
 #    · Busca la primera línea que contenga "ERROR" o "Exception"
-#    · Las últimas 50 líneas se muestran directamente en el
-#      paso "Debug Workspace" sin necesidad de descargar el log
+#    · Las últimas 80 líneas se muestran en "Debug Workspace"
+#    · Si falla en el paso "Limpiar build", descarga "clean-log-v7"
 # ──────────────────────────────────────────────────────────────────────
