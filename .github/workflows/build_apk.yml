@@ -1,18 +1,16 @@
 # ╔══════════════════════════════════════════════════════════════════════╗
-# ║  CYBERLOAD MSTL — GitHub Actions Workflow                           ║
-# ║  Compilación automática de APK Android con Buildozer               ║
-# ║  Compatible: GitHub Actions 2026 · Ubuntu 22.04                    ║
-# ║  Acción: ArtemSBulgakov/buildozer-action@v1                        ║
+# ║  CYBERLOAD MSTL — GitHub Actions Workflow v2 (CORREGIDO)           ║
+# ║  Fix: Eliminado ArtemSBulgakov/buildozer-action@v1                 ║
+# ║       (chown invalid user bug en runners 2025-2026)                ║
+# ║  Método: Buildozer instalado directamente en Ubuntu 22.04          ║
 # ╚══════════════════════════════════════════════════════════════════════╝
 
 name: 🤖 Build Cyberload MSTL APK
 
 # ──────────────────────────────────────────────────────────────────────
 #  DISPARADORES
-#  · push          → Se activa automáticamente al hacer git push
-#                    a cualquier rama (o solo a "main" si prefieres).
-#  · workflow_dispatch → Permite ejecutarlo manualmente desde
-#                    GitHub → pestaña "Actions" → botón "Run workflow".
+#  · push              → Al hacer git push a main o master
+#  · workflow_dispatch → Manualmente desde la pestaña Actions de GitHub
 # ──────────────────────────────────────────────────────────────────────
 on:
   push:
@@ -22,28 +20,50 @@ on:
   workflow_dispatch:
 
 # ──────────────────────────────────────────────────────────────────────
-#  JOBS
+#  PERMISOS
+#  Se declaran explícitamente para evitar conflictos en repos privados.
 # ──────────────────────────────────────────────────────────────────────
+permissions:
+  contents: read
+
 jobs:
   build-apk:
-    name: 🏗️ Compilar APK con Buildozer
-    runs-on: ubuntu-22.04        # Versión fija para mayor estabilidad
+    name: 🏗️ Compilar APK con Buildozer (directo)
+    runs-on: ubuntu-22.04
+
+    # ── Variables de entorno globales del job ──────────────────────────
+    # Buildozer y python-for-android las leen automáticamente.
+    env:
+      JAVA_HOME:        /usr/lib/jvm/java-17-openjdk-amd64
+      ANDROID_SDK_ROOT: /home/runner/.buildozer/android/platform/android-sdk
+      BUILDOZER_WARN_ON_ROOT: "0"
 
     steps:
 
-      # ── PASO 1: Clonar el repositorio ────────────────────────────────
-      # Usa checkout@v4 (versión más reciente y requerida en 2026).
-      # Clona TODOS los archivos del repo en la raíz del runner.
-      # ─────────────────────────────────────────────────────────────────
+      # ── PASO 1: Clonar el repositorio ──────────────────────────────
       - name: 📥 Clonar repositorio
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0          # Historial completo (necesario para algunas herramientas)
+          fetch-depth: 0
 
-      # ── PASO 2: Instalar dependencias del sistema ─────────────────────
-      # Paquetes extra del sistema que aseguran compatibilidad con
-      # yt-dlp, instaloader, pillow y la cadena de compilación de p4a.
-      # ─────────────────────────────────────────────────────────────────
+      # ── PASO 2: Configurar Python 3.10 ─────────────────────────────
+      # Python 3.10 es la versión más estable con Buildozer + p4a
+      # en 2025-2026. Python 3.11+ puede causar problemas con Cython.
+      - name: 🐍 Configurar Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      # ── PASO 3: Dependencias del sistema ───────────────────────────
+      # Lista completa verificada para compilar KivyMD + yt-dlp +
+      # instaloader + pillow sobre python-for-android (p4a).
+      #
+      # Paquetes clave:
+      #   · openjdk-17-jdk     → Gradle / Android build tools
+      #   · libssl-dev         → yt-dlp / instaloader (requests/urllib3)
+      #   · libltdl-dev        → p4a recipes que usan libtool
+      #   · cmake / autoconf   → compilación nativa de recetas p4a
+      #   · ccache             → acelera recompilaciones (caché de C)
       - name: 🔧 Instalar dependencias del sistema
         run: |
           sudo apt-get update -qq
@@ -55,105 +75,139 @@ jobs:
             python3-pip \
             libssl-dev \
             libffi-dev \
+            libltdl-dev \
+            libcurl4-openssl-dev \
             build-essential \
-            ccache
+            ccache \
+            autoconf \
+            libtool \
+            cmake \
+            pkg-config \
+            zlib1g-dev \
+            libjpeg-dev \
+            libpng-dev
 
-      # ── PASO 3: Caché de Buildozer ────────────────────────────────────
-      # Guarda la carpeta .buildozer entre ejecuciones para reutilizar
-      # el SDK, NDK y los paquetes ya compilados de python-for-android.
-      #
-      # La key incluye el hash de buildozer.spec → si cambias
-      # requirements o configuración, el caché se invalida solo.
+      # ── PASO 4: Instalar Buildozer y Cython ────────────────────────
+      # · Cython 0.29.x es obligatorio — Cython 3.x rompe p4a
+      # · buildozer sin fijar versión = última estable disponible
+      # · virtualenv es necesario para que Buildozer cree entornos
+      - name: 📦 Instalar Buildozer y Cython
+        run: |
+          pip install --upgrade pip setuptools wheel
+          pip install "cython==0.29.37"
+          pip install buildozer
+          pip install virtualenv
+
+      # ── PASO 5: Verificar versiones instaladas ─────────────────────
+      - name: 🔍 Verificar versiones
+        run: |
+          python --version
+          java -version
+          buildozer version
+          cython --version
+
+      # ── PASO 6: Caché de Buildozer completo ────────────────────────
+      # Cubre SDK, NDK, Gradle y todos los paquetes compilados de p4a.
+      # La key usa el hash de buildozer.spec → si cambias requirements
+      # el caché se invalida automáticamente.
       #
       # Ahorro de tiempo:
-      #   · Build #1 (sin caché): ~35–45 min
-      #   · Build #2+ (con caché): ~5–12 min
-      # ─────────────────────────────────────────────────────────────────
-      - name: 💾 Restaurar caché de Buildozer
+      #   Build #1 (sin caché): ~40–55 min
+      #   Build #2+ (con caché): ~8–15 min
+      - name: 💾 Restaurar caché de Buildozer / SDK / Gradle
         uses: actions/cache@v4
         with:
           path: |
             ~/.buildozer
             .buildozer
-          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+            ~/.gradle
+            ~/.android
+          key: buildozer-v2-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
-            buildozer-${{ runner.os }}-
+            buildozer-v2-${{ runner.os }}-
 
-      # ── PASO 4: Compilar APK con Buildozer ───────────────────────────
-      # Usa la acción oficial de ArtemSBulgakov que levanta un
-      # contenedor Docker con Buildozer + SDK + NDK preinstalados.
-      #
-      # · workdir: "."        → raíz del repo (donde está buildozer.spec)
-      # · command: android debug → compila en modo debug (tu config actual)
-      # · github_token        → para caché de GitHub (auto-generado)
-      # ─────────────────────────────────────────────────────────────────
-      - name: 🔨 Compilar APK (Buildozer Android Debug)
-        uses: ArtemSBulgakov/buildozer-action@v1
-        id: buildozer
-        with:
-          command: android debug
-          workdir: .
-          buildozer_version: stable
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # ── PASO 5: Listar archivos APK generados ────────────────────────
-      # Muestra en los logs qué APKs se crearon en bin/ para depuración.
-      # ─────────────────────────────────────────────────────────────────
-      - name: 📋 Listar APKs generados
+      # ── PASO 7: Aceptar licencias Android SDK ──────────────────────
+      # Crea el directorio de licencias con los hashes oficiales.
+      # Esto evita que Buildozer se quede esperando input manual
+      # al descargar el SDK por primera vez.
+      - name: 🔐 Aceptar licencias Android SDK
         run: |
-          echo "=== Archivos en bin/ ==="
-          ls -lh bin/*.apk 2>/dev/null || echo "⚠️  No se encontraron APKs en bin/"
+          mkdir -p "$HOME/.android"
+          touch "$HOME/.android/repositories.cfg"
+          mkdir -p "$HOME/.buildozer/android/platform/android-sdk/licenses"
+          echo "24333f8a63b6825ea9c5514f83c2829b004d1fee" \
+            > "$HOME/.buildozer/android/platform/android-sdk/licenses/android-sdk-license"
+          echo "84831b9409646a918e30573bab4c9c91346d8abd" \
+            >> "$HOME/.buildozer/android/platform/android-sdk/licenses/android-sdk-license"
+          echo "d975f751698a77b662f1254ddbeed3901e976f5a" \
+            > "$HOME/.buildozer/android/platform/android-sdk/licenses/android-sdk-preview-license"
 
-      # ── PASO 6: Subir APK como artefacto descargable ─────────────────
-      # Usa upload-artifact@v4 (v3 fue deprecada — obligatorio en 2026).
-      # El APK estará disponible en GitHub → Actions → tu workflow run
-      # → sección "Artifacts" → botón de descarga.
+      # ── PASO 8: Compilar APK con Buildozer ─────────────────────────
+      # · -v = verbose (logs detallados para depurar si falla)
+      # · android debug = modo debug, tal como en tu buildozer.spec
       #
-      # · name: nombre del artefacto en la UI de GitHub
-      # · path: busca cualquier .apk dentro de bin/
-      # · retention-days: 30 → lo conserva 30 días (máximo gratis)
-      # ─────────────────────────────────────────────────────────────────
+      # HOME se exporta explícitamente porque dentro del runner puede
+      # no estar definido correctamente para comandos sudo internos.
+      - name: 🔨 Compilar APK (buildozer android debug)
+        run: |
+          export HOME=/home/runner
+          export PATH="$HOME/.local/bin:$PATH"
+          buildozer -v android debug 2>&1 | tee build.log
+
+      # ── PASO 9: Mostrar APKs generados ─────────────────────────────
+      - name: 📋 Listar APKs en bin/
+        run: |
+          echo "=== APKs generados ==="
+          ls -lh bin/*.apk 2>/dev/null || echo "⚠️  No se encontraron APKs — revisa build.log"
+
+      # ── PASO 10: Subir APK como artefacto descargable ──────────────
+      # upload-artifact@v4 es obligatorio en 2026 (v3 fue deprecada).
+      # Descarga: GitHub → Actions → tu run → Artifacts → cyberload-mstl-apk
       - name: 📦 Subir APK como Artefacto
         uses: actions/upload-artifact@v4
         with:
           name: cyberload-mstl-apk
           path: bin/*.apk
           retention-days: 30
-          if-no-files-found: error   # Falla el workflow si no hay APK (evita silencios)
+          if-no-files-found: error
+
+      # ── PASO 11: Subir log del build (siempre, incluso si falla) ───
+      # Muy útil para depurar errores sin tener que relanzar el build.
+      # Se ejecuta con "if: always()" para que corra aunque falle paso 8.
+      - name: 📄 Subir log del build
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-log
+          path: build.log
+          retention-days: 7
 
 # ──────────────────────────────────────────────────────────────────────
 #  INSTRUCCIONES DE USO
 #  ─────────────────────────────────────────────────────────────────────
 #
-#  1. Estructura de carpetas en tu repo de GitHub:
+#  ESTRUCTURA REQUERIDA EN TU REPO:
 #
-#       tu-repo/
-#       ├── .github/
-#       │   └── workflows/
-#       │       └── build_apk.yml    ← ESTE ARCHIVO
-#       ├── main.py
-#       ├── mstl_logic.py
-#       ├── icon.png
-#       └── buildozer.spec
+#    tu-repo/
+#    ├── .github/
+#    │   └── workflows/
+#    │       └── build_apk.yml   ← ESTE ARCHIVO
+#    ├── main.py
+#    ├── mstl_logic.py
+#    ├── icon.png
+#    └── buildozer.spec
 #
-#  2. Cómo activar la compilación:
-#     · Automático: Haz git push a la rama main o master.
-#     · Manual: GitHub → tu repo → Actions → "Build Cyberload MSTL APK"
-#               → botón "Run workflow" → "Run workflow".
+#  CÓMO ACTIVAR:
+#    · Automático: git push a main/master
+#    · Manual:     GitHub → Actions → "Build Cyberload MSTL APK"
+#                  → "Run workflow" → "Run workflow"
 #
-#  3. Cómo descargar el APK:
-#     GitHub → tu repo → Actions → clic en el run completado
-#     → sección "Artifacts" → clic en "cyberload-mstl-apk" → descarga ZIP
-#     → extrae el .apk y pásalo a tu Android.
+#  CÓMO DESCARGAR EL APK:
+#    GitHub → Actions → clic en el run completado → Artifacts
+#    → "cyberload-mstl-apk" → descarga el ZIP → extrae el .apk
 #
-#  4. Tiempos estimados:
-#     · Primera compilación (sin caché): 35–50 minutos
-#     · Compilaciones siguientes (con caché): 5–15 minutos
-#
-#  5. Para compilar en modo RELEASE (distribución):
-#     Cambia la línea: command: android debug
-#     Por:             command: android release
-#     (Requiere configurar firma en buildozer.spec)
+#  SI FALLA:
+#    → Descarga el artefacto "build-log" desde la misma sección
+#    → Busca la línea con "ERROR" o "Exception" para el diagnóstico
 #
 # ──────────────────────────────────────────────────────────────────────
