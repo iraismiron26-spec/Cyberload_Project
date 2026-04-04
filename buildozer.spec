@@ -1,20 +1,23 @@
 # ╔══════════════════════════════════════════════════════════════════╗
-# ║  buildozer.spec — CYBERLOAD MSTL v1.9                          ║
-# ║  Generado para: KivyMD + yt-dlp + Instaloader + Pillow         ║
-# ║  Target: Android 8+ (API 26+) · Sin FFmpeg · APK lista         ║
+# ║  buildozer.spec — CYBERLOAD MSTL v2.0                          ║
 # ║                                                                  ║
-# ║  Cambios v1.9:                                                  ║
-# ║  · version bump 1.8 → 1.9 (fuerza reinstalación limpia)        ║
-# ║  · Sin otros cambios — spec correcto desde V9                   ║
+# ║  Cambios v2.0:                                                  ║
+# ║  · package.domain = org.test                                    ║
+# ║    → ruta interna: /Android/data/org.test.cyberload/files/      ║
+# ║  · version bump → 2.0 (cookie auto-download feature)           ║
 # ╚══════════════════════════════════════════════════════════════════╝
 
 [app]
 
 title = Cyberload MSTL
 package.name = cyberload
-package.domain = org.mstl
 
-version = 1.9
+# ── CRÍTICO: org.test genera la ruta interna ──────────────────────
+# /storage/emulated/0/Android/data/org.test.cyberload/files/
+# Ahí es donde main.py guardará cookies.txt descargado de GitHub.
+package.domain = org.test
+
+version = 2.0
 
 source.dir = .
 source.include_exts = py,png,jpg,json,txt
@@ -31,19 +34,21 @@ orientation = portrait
 android.archs = arm64-v8a, armeabi-v7a
 
 # ──────────────────────────────────────────────────────────────────
-#  REQUIREMENTS v1.9
+#  REQUIREMENTS v2.0
 #
-#  · python3            → intérprete base. OBLIGATORIO primer ítem.
+#  · python3            → intérprete base.
 #  · kivy==2.2.1        → framework UI estable con p4a.
-#  · kivymd==1.2.0      → Material Design. Compatible con kivy 2.2.1.
-#  · openssl            → receta NATIVA p4a. Va antes de requests/yt-dlp.
+#  · kivymd==1.2.0      → Material Design.
+#  · openssl            → receta NATIVA. Va antes de requests/yt-dlp.
 #  · yt-dlp             → motor YouTube/TikTok/Facebook/+.
 #  · instaloader        → motor Instagram.
 #  · pillow             → conversión webp→jpg.
-#  · certifi            → certificados CA para HTTPS.
-#  · urllib3            → cliente HTTP de bajo nivel.
-#  · charset-normalizer → dep. interna de requests.
-#  · requests           → cliente HTTP. Usado por instaloader.
+#  · certifi            → certificados CA. Requerido por requests
+#                         para descargar cookies.txt de GitHub HTTPS.
+#  · urllib3            → cliente HTTP bajo nivel.
+#  · charset-normalizer → encoding detection (dep. de requests).
+#  · requests           → cliente HTTP. Usado para descargar cookies
+#                         desde GitHub y por instaloader.
 #  · setuptools         → instalación de paquetes en p4a.
 # ──────────────────────────────────────────────────────────────────
 requirements = python3,\
@@ -71,13 +76,12 @@ warn_on_root = 1
 android.minapi = 26
 android.api = 33
 android.ndk = 25b
-
 android.build_tools_version = 33.0.2
 
 # ── Permisos ──────────────────────────────────────────────────────
-#  INTERNET                : red para yt-dlp e instaloader
-#  READ_EXTERNAL_STORAGE   : leer cookies.txt desde /sdcard/
-#  WRITE_EXTERNAL_STORAGE  : escribir en /Download/
+#  INTERNET                : descargar cookies de GitHub + yt-dlp
+#  READ_EXTERNAL_STORAGE   : leer archivos en /sdcard/
+#  WRITE_EXTERNAL_STORAGE  : escribir cookies.txt en /Android/data/
 #  MANAGE_EXTERNAL_STORAGE : acceso completo en Android 11+
 # ──────────────────────────────────────────────────────────────────
 android.permissions = INTERNET,\
@@ -85,11 +89,9 @@ android.permissions = INTERNET,\
                       WRITE_EXTERNAL_STORAGE,\
                       MANAGE_EXTERNAL_STORAGE
 
-# CRÍTICO: Sin esta línea buildozer se detiene esperando confirmación.
 android.accept_sdk_license = True
 
 android.gradle_dependencies =
-
 android.enable_androidx = True
 
 p4a.bootstrap = sdl2
@@ -98,9 +100,8 @@ android.release_artifact = apk
 android.debug = True
 
 android.activity_class_name = org.kivy.android.PythonActivity
-
 android.manifest.android_windowSoftInputMode = adjustResize
 
 
 [ios]
-# iOS no aplica a este proyecto.
+# iOS no aplica.

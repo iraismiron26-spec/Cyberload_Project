@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 # ╔══════════════════════════════════════════════════════════╗
-# ║  MSTL LOGIC — Módulo de Descarga                        ║
-# ║  Basado en MSTL UNIFIED v1.3                            ║
+# ║  MSTL LOGIC — Módulo de Descarga  v2.0                  ║
 # ║  Instagram · TikTok · YouTube · Facebook · +            ║
 # ║  Motor: Instaloader + yt-dlp | Sin FFmpeg | Pydroid 3   ║
 # ║  API pública: descargar(url, callback=None)             ║
+# ║                                                          ║
+# ║  Cambios v2.0:                                          ║
+# ║  · COOKIES_PATH → función dinámica _get_cookies_path()  ║
+# ║    Busca cookies en Android/data/org.test.cyberload/    ║
+# ║    files/ primero, luego /sdcard/ como fallback.        ║
 # ╚══════════════════════════════════════════════════════════╝
 
 import yt_dlp
@@ -26,11 +30,66 @@ from pathlib import Path
 #   con permisos de escritura correctos → archivos "fantasma".
 # ══════════════════════════════════════════════════════════
 RUTA_DOWNLOADS = '/storage/emulated/0/Download/'
-COOKIES_PATH   = '/sdcard/cookies.txt'
 HISTORIAL_PATH = '/storage/emulated/0/Download/mstl_historial.json'
 
 # Garantizar carpeta destino antes de cualquier operación
 os.makedirs(RUTA_DOWNLOADS, exist_ok=True)
+
+
+# ══════════════════════════════════════════════════════════
+#   RUTA DINÁMICA DE COOKIES — v2.0
+#
+#   La función _get_cookies_path() busca cookies.txt en el
+#   siguiente orden de prioridad:
+#
+#   1. Android/data/org.test.cyberload/files/cookies.txt
+#      → ruta interna de la app (descargada desde GitHub)
+#   2. /sdcard/cookies.txt
+#      → compatibilidad con versiones anteriores (manual)
+#   3. None → sin cookies disponibles
+#
+#   Esto garantiza que main.py y mstl_logic.py siempre
+#   lean desde la misma ruta, independientemente del entorno.
+# ══════════════════════════════════════════════════════════
+
+def _get_cookies_path():
+    """
+    Detecta dinámicamente la ruta de cookies.txt.
+
+    Orden de prioridad:
+        1. App external files dir (Android/data/org.test.cyberload/files/)
+        2. /sdcard/cookies.txt (compatibilidad)
+        3. None si no existe ninguna
+    """
+    # ── Prioridad 1: carpeta interna de la app (v2.0) ────────────────
+    # Misma lógica que main.py para coherencia de rutas.
+    app_cookies = None
+
+    try:
+        from jnius import autoclass
+        PythonActivity = autoclass('org.kivy.android.PythonActivity')
+        context = PythonActivity.mActivity
+        ext_dir = context.getExternalFilesDir(None)
+        if ext_dir is not None:
+            app_cookies = os.path.join(ext_dir.getAbsolutePath(), 'cookies.txt')
+    except Exception:
+        pass
+
+    if app_cookies is None:
+        # Fallback hardcoded para Android sin jnius
+        android_files = '/storage/emulated/0/Android/data/org.test.cyberload/files/cookies.txt'
+        if os.path.exists(os.path.dirname(android_files)):
+            app_cookies = android_files
+
+    if app_cookies and os.path.exists(app_cookies):
+        return app_cookies
+
+    # ── Prioridad 2: /sdcard/ (compatibilidad con versiones anteriores)
+    if os.path.exists('/sdcard/cookies.txt'):
+        return '/sdcard/cookies.txt'
+
+    # ── Sin cookies disponibles ──────────────────────────────────────
+    return None
 
 # ── Colores ANSI (terminal) ───────────────────────────────
 R, BOLD, GREEN, GOLD, RED, YELLOW, CYAN, GRAY = (
@@ -195,13 +254,15 @@ def _convertir_webp_a_jpg(filepath, callback=None):
 def _cookies_ok(callback=None):
     """
     Verifica que el archivo de cookies exista y lo devuelve (o None).
-    Notifica aviso tanto en terminal como en GUI.
+    v2.0: Usa _get_cookies_path() para detección dinámica de rutas.
     """
-    if os.path.exists(COOKIES_PATH):
-        return COOKIES_PATH
+    ruta = _get_cookies_path()
+    if ruta:
+        print(f"  {c(f'🍪 Cookies encontradas: {ruta}', GREEN)}")
+        return ruta
     _notify(
-        f"  {c('⚠️  cookies.txt no encontrado en /sdcard/ — posible bloqueo.', YELLOW)}",
-        "⚠️ cookies.txt no encontrado — posible bloqueo.",
+        f"  {c('⚠️  cookies.txt no encontrado — posible bloqueo en Instagram/TikTok.', YELLOW)}",
+        "⚠️ Sin cookies disponibles — posible bloqueo.",
         callback
     )
     return None
