@@ -19,8 +19,7 @@ jobs:
     name: 🏗️ Build Cyberload MSTL v13 APK
     runs-on: ubuntu-latest
 
-    # ── Fix warning: Node.js 20 deprecado ────────────────────────────
-    # Fuerza todas las actions (checkout, cache, etc.) a usar Node 24.
+    # ── Fix warning: fuerza Node.js 24 en todas las actions ──────────
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -88,51 +87,78 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      # ── PASO 6: Configurar Android SDK y Build Tools ─────────────────
-      # CRÍTICO — Fix del error "Aidl not found":
+      # ── PASO 6: Configurar Android SDK, Build Tools y NDK ────────────
       #
-      # 'aidl' es un binario que viene dentro de build-tools/33.0.2.
-      # El runner de GitHub tiene el SDK pre-instalado en:
-      #   /usr/local/lib/android/sdk
-      # pero no siempre incluye la versión exacta de build-tools
-      # que el buildozer.spec requiere (33.0.2).
-      #
-      # Este paso:
-      #   1. Apunta ANDROID_HOME al SDK pre-instalado del runner.
-      #   2. Instala build-tools;33.0.2, platforms;android-33 y
-      #      platform-tools via sdkmanager.
-      #   3. Añade build-tools/33.0.2 al PATH → 'aidl' queda accesible.
-      #   4. Acepta todas las licencias del SDK.
-      #   5. Verifica que 'aidl' existe antes de que Buildozer arranque.
-      - name: 📱 Configurar Android SDK y Build Tools
+      # ╔═══════════════════════════════════════════════════════════════╗
+      # ║  FIX DEFINITIVO — "Aidl not found"                           ║
+      # ╠═══════════════════════════════════════════════════════════════╣
+      # ║  CAUSA RAÍZ:                                                  ║
+      # ║  Buildozer NO usa ANDROID_HOME. Su código fuente              ║
+      # ║  (targets/android.py) revisa la variable ANDROIDSDK.          ║
+      # ║  Además, busca aidl en su propia ruta:                        ║
+      # ║    ~/.buildozer/android/platform/android-sdk/                 ║
+      # ║  y no en el SDK del sistema.                                  ║
+      # ║                                                               ║
+      # ║  SOLUCIÓN (3 partes):                                         ║
+      # ║  1. Instalar build-tools;33.0.2 y NDK 25b en el SDK          ║
+      # ║     pre-instalado del runner (/usr/local/lib/android/sdk).    ║
+      # ║  2. Crear un symlink para que la ruta interna de Buildozer    ║
+      # ║     apunte al SDK pre-instalado (donde sí está aidl).         ║
+      # ║  3. Exportar ANDROIDSDK y ANDROIDNDK — las variables que      ║
+      # ║     Buildozer realmente lee — via $GITHUB_ENV.                ║
+      # ╚═══════════════════════════════════════════════════════════════╝
+      - name: 📱 Configurar Android SDK, Build Tools y NDK
         run: |
-          export ANDROID_HOME=/usr/local/lib/android/sdk
-          export ANDROID_SDK_ROOT=$ANDROID_HOME
+          ANDROID_SDK=/usr/local/lib/android/sdk
+          SDKMANAGER="$ANDROID_SDK/cmdline-tools/latest/bin/sdkmanager"
+          NDK_VERSION="25.1.8937393"
+          NDK_PATH="$ANDROID_SDK/ndk/$NDK_VERSION"
 
-          # Registrar variables en el entorno de pasos posteriores
-          echo "ANDROID_HOME=$ANDROID_HOME"         >> $GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+          echo "══ [1/4] Aceptando licencias del SDK ══"
+          yes | $SDKMANAGER --licenses || true
 
-          # Añadir build-tools y platform-tools al PATH global del runner
-          echo "$ANDROID_HOME/build-tools/33.0.2"  >> $GITHUB_PATH
-          echo "$ANDROID_HOME/platform-tools"       >> $GITHUB_PATH
-
-          # Aceptar todas las licencias del SDK
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
-
-          # Instalar las herramientas requeridas por buildozer.spec
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+          echo "══ [2/4] Instalando build-tools;33.0.2, android-33 y NDK 25b ══"
+          $SDKMANAGER \
             "build-tools;33.0.2" \
             "platforms;android-33" \
-            "platform-tools"
+            "platform-tools" \
+            "ndk;$NDK_VERSION"
 
-          # Verificar que 'aidl' existe y es ejecutable
-          echo "══ Verificando 'aidl' ══"
-          ls -la "$ANDROID_HOME/build-tools/33.0.2/aidl" \
-            && echo "✅ aidl encontrado correctamente" \
-            || echo "❌ aidl NO encontrado — revisar build-tools"
+          echo "══ [3/4] Verificando aidl y NDK ══"
+          ls -la "$ANDROID_SDK/build-tools/33.0.2/aidl" \
+            && echo "✅ aidl encontrado" \
+            || { echo "❌ aidl NO encontrado — abortando"; exit 1; }
+
+          ls -d "$NDK_PATH" \
+            && echo "✅ NDK 25b encontrado en $NDK_PATH" \
+            || echo "⚠️  NDK path no encontrado, Buildozer lo intentará descargar"
+
+          echo "══ [4/4] Creando symlink para Buildozer ══"
+          # Buildozer busca su SDK en: ~/.buildozer/android/platform/android-sdk/
+          # El symlink redirige esa ruta al SDK pre-instalado del runner.
+          mkdir -p "$HOME/.buildozer/android/platform"
+          if [ ! -e "$HOME/.buildozer/android/platform/android-sdk" ]; then
+            ln -s "$ANDROID_SDK" "$HOME/.buildozer/android/platform/android-sdk"
+            echo "✅ Symlink creado: ~/.buildozer/android/platform/android-sdk → $ANDROID_SDK"
+          else
+            echo "ℹ️  Symlink/directorio ya existe (cache hit)"
+          fi
+
+          echo "══ Exportando variables a GITHUB_ENV ══"
+          # ANDROIDSDK y ANDROIDNDK → variables que Buildozer realmente lee
+          echo "ANDROID_HOME=$ANDROID_SDK"       >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK"   >> $GITHUB_ENV
+          echo "ANDROIDSDK=$ANDROID_SDK"         >> $GITHUB_ENV
+          echo "ANDROIDNDK=$NDK_PATH"            >> $GITHUB_ENV
+
+          # Añadir aidl y platform-tools al PATH del runner
+          echo "$ANDROID_SDK/build-tools/33.0.2" >> $GITHUB_PATH
+          echo "$ANDROID_SDK/platform-tools"     >> $GITHUB_PATH
 
       # ── PASO 7: Restaurar Caché de Buildozer ─────────────────────────
+      # NOTA: La caché guarda ~/.buildozer (que ahora contiene el symlink).
+      # En un cache-hit, el symlink ya existe → el Paso 6 lo detecta y
+      # no lo recrea, evitando conflictos.
       - name: 🗃️ Restaurar Caché de Buildozer
         uses: actions/cache@v4
         with:
@@ -145,8 +171,9 @@ jobs:
             buildozer-v13-${{ runner.os }}-
 
       # ── PASO 8: Construir APK Android (Debug) ────────────────────────
-      # set -o pipefail → el paso falla con el exit code real de
-      # buildozer y no el de 'tee' (que siempre devuelve 0).
+      # Buildozer lee ANDROIDSDK y ANDROIDNDK (no ANDROID_HOME).
+      # Con el symlink del Paso 6, ~/.buildozer/.../android-sdk
+      # apunta al SDK pre-instalado donde build-tools/33.0.2/aidl existe.
       - name: 🚀 Construir APK Android (Debug)
         run: |
           set -o pipefail
@@ -155,6 +182,8 @@ jobs:
           JAVA_HOME: ${{ env.JAVA_HOME }}
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
           ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
+          ANDROIDSDK: ${{ env.ANDROIDSDK }}
+          ANDROIDNDK: ${{ env.ANDROIDNDK }}
           BUILDOZER_WARN_ON_ROOT: 0
 
       # ── PASO 9: Localizar y copiar APK a carpeta conocida ────────────
