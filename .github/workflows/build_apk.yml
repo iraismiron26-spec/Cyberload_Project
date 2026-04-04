@@ -23,11 +23,11 @@ jobs:
 
       # ── PASO 1: Clonar el repositorio ────────────────────────────────
       - name: 🔍 Checkout del Repositorio
-        uses: actions/checkout@v4                        # ✅ v4 (actualizado)
+        uses: actions/checkout@v4
 
       # ── PASO 2: Configurar Python 3.9 ────────────────────────────────
       - name: 🐍 Configurar Python 3.9
-        uses: actions/setup-python@v5                    # ✅ v5 (actualizado)
+        uses: actions/setup-python@v5
         with:
           python-version: '3.9'
 
@@ -78,14 +78,14 @@ jobs:
 
       # ── PASO 5: Configurar Java 17 ────────────────────────────────────
       - name: ☕ Configurar Java 17
-        uses: actions/setup-java@v4                      # ✅ v4 (actualizado)
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
       # ── PASO 6: Restaurar Caché de Buildozer ─────────────────────────
       - name: 🗃️ Restaurar Caché de Buildozer
-        uses: actions/cache@v4                           # ✅ v4 (actualizado)
+        uses: actions/cache@v4
         with:
           path: |
             ~/.buildozer
@@ -105,29 +105,64 @@ jobs:
           fi
 
       # ── PASO 8: Construir APK Android (Debug) ────────────────────────
+      # CRÍTICO: 'set -o pipefail' hace que el paso falle con el exit
+      # code real de buildozer y no el de 'tee' (que siempre es 0).
       - name: 🚀 Construir APK Android (Debug)
         run: |
+          set -o pipefail
           buildozer android debug 2>&1 | tee build.log
         env:
           JAVA_HOME: ${{ env.JAVA_HOME }}
-          ANDROID_HOME: ${{ env.HOME }}/.buildozer/platform/android-sdk
-          ANDROID_SDK_ROOT: ${{ env.HOME }}/.buildozer/platform/android-sdk
+          ANDROID_HOME: ${{ env.HOME }}/.buildozer/android/platform/android-sdk
+          ANDROID_SDK_ROOT: ${{ env.HOME }}/.buildozer/android/platform/android-sdk
           BUILDOZER_WARN_ON_ROOT: 0
 
-      # ── PASO 9: Mostrar log si el build falla ────────────────────────
+      # ── PASO 9: Localizar APK y copiar a carpeta conocida ────────────
+      # Buildozer puede guardar el APK en rutas distintas según versión:
+      #   · bin/*.apk  (ruta estándar)
+      #   · .buildozer/android/platform/build-*/dists/*/bin/*.apk
+      # Este paso busca en TODO el workspace y copia a artifacts/.
+      - name: 🔎 Localizar y Copiar APK
+        run: |
+          echo "══ Buscando archivos .apk en el workspace ══"
+          find "$GITHUB_WORKSPACE" -name "*.apk" 2>/dev/null || true
+          find "$HOME/.buildozer" -name "*.apk" 2>/dev/null || true
+
+          echo "══ Copiando APK(s) encontrado(s) a artifacts/ ══"
+          mkdir -p artifacts
+
+          # Buscar en bin/ primero (ruta estándar de Buildozer)
+          if ls "$GITHUB_WORKSPACE"/bin/*.apk 1>/dev/null 2>&1; then
+            cp "$GITHUB_WORKSPACE"/bin/*.apk artifacts/
+            echo "✅ APK copiado desde bin/"
+
+          # Buscar en rutas internas de .buildozer como fallback
+          elif find "$HOME/.buildozer" -name "*.apk" | grep -q .; then
+            find "$HOME/.buildozer" -name "*.apk" -exec cp {} artifacts/ \;
+            echo "✅ APK copiado desde .buildozer interno"
+
+          else
+            echo "❌ No se encontró ningún .apk — el build falló"
+            exit 1
+          fi
+
+          echo "══ Contenido de artifacts/ ══"
+          ls -lh artifacts/
+
+      # ── PASO 10: Mostrar log si el build falla ───────────────────────
       - name: 🐛 Mostrar Log (solo si falla el build)
         if: failure()
         run: |
-          echo "══ Últimas 100 líneas del log de compilación ══"
-          tail -100 build.log || echo "No se encontró build.log"
+          echo "══ Últimas 150 líneas del log de compilación ══"
+          tail -150 build.log || echo "No se encontró build.log"
 
-      # ── PASO 10: Subir APK como Artefacto descargable ────────────────
+      # ── PASO 11: Subir APK como Artefacto descargable ────────────────
+      # Sube desde artifacts/ — ruta garantizada por el Paso 9.
       - name: 📤 Subir APK como Artefacto
-        if: success()
-        uses: actions/upload-artifact@v4                 # ✅ v4 (actualizado)
+        uses: actions/upload-artifact@v4
         with:
           name: cyberload-mstl-v13-debug
-          path: bin/*.apk
+          path: artifacts/*.apk
           retention-days: 90
           if-no-files-found: error
-          overwrite: true                                # ✅ nuevo en v4, evita error por nombre duplicado
+          overwrite: true
