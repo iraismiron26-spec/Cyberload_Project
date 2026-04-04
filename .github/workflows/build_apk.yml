@@ -1,7 +1,8 @@
 # ╔══════════════════════════════════════════════════════════════════════╗
-# ║  CYBERLOAD MSTL — GitHub Actions Workflow v3 (FIX COMPLETO)        ║
-# ║  Fix: Licencias SDK en 2 fases, log completo, deps nativas          ║
-# ║  Método: Buildozer directo en Ubuntu 22.04 sin Docker               ║
+# ║  CYBERLOAD MSTL — GitHub Actions Workflow v4                        ║
+# ║  Fix: Eliminado libgstreamer1.0-dev y deps conflictivas             ║
+# ║       apt --fix-broken antes de instalar                            ║
+# ║       Instalación dividida en 2 bloques para mejor diagnóstico      ║
 # ╚══════════════════════════════════════════════════════════════════════╝
 
 name: 🤖 Build Cyberload MSTL APK
@@ -18,16 +19,14 @@ permissions:
 
 jobs:
   build-apk:
-    name: 🏗️ Compilar APK (v3 — fix licencias + log completo)
+    name: 🏗️ Compilar APK (v4 — deps limpias)
     runs-on: ubuntu-22.04
 
     env:
-      JAVA_HOME:                    /usr/lib/jvm/java-17-openjdk-amd64
-      BUILDOZER_WARN_ON_ROOT:       "0"
-      # Estas variables evitan que Buildozer pregunte versiones
-      # interactivamente durante la inicialización del SDK.
-      BUILDOZER_ANDROID_API:        "33"
-      BUILDOZER_ANDROID_MINAPI:     "26"
+      JAVA_HOME:                     /usr/lib/jvm/java-17-openjdk-amd64
+      BUILDOZER_WARN_ON_ROOT:        "0"
+      BUILDOZER_ANDROID_API:         "33"
+      BUILDOZER_ANDROID_MINAPI:      "26"
       BUILDOZER_ANDROID_NDK_VERSION: "25b"
 
     steps:
@@ -39,86 +38,112 @@ jobs:
           fetch-depth: 0
 
       # ── PASO 2: Configurar Python 3.10 ────────────────────────────
-      # Python 3.10 = versión más estable con Buildozer + p4a.
-      # Python 3.11+ rompe varias recetas de Cython en p4a.
       - name: 🐍 Configurar Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      # ── PASO 3: Dependencias del sistema (lista completa) ──────────
+      # ── PASO 3A: Sanear el sistema de paquetes ─────────────────────
       #
-      # Paquetes NUEVOS respecto a v2 y por qué son necesarios:
+      # FIX DIRECTO al error "held broken packages":
+      #   · apt-get upgrade -y   → sincroniza versiones del runner
+      #   · apt --fix-broken install → resuelve dependencias rotas
+      #                               ANTES de instalar nada nuevo
       #
-      #   patchelf          → p4a lo usa para reubicar rutas de .so
-      #                       (sin él, las libs nativas no se empaquetan)
-      #   ninja-build       → sistema de build requerido por CMake/p4a
-      #   libglib2.0-dev    → dependencia de algunas recetas de red
-      #   lld               → linker alternativo más rápido para ARM
-      #   libgstreamer1.0-dev → requerido por recetas de audio de Kivy
-      #   libsqlite3-dev    → yt-dlp usa sqlite3 para caché interno
-      #   wget / curl       → Buildozer los usa para descargar SDK/NDK
-      #   libncurses5       → requerido por algunas herramientas del NDK
-      - name: 🔧 Instalar dependencias del sistema
+      # Esto elimina el estado inconsistente que causaba el conflicto
+      # con libgstreamer1.0-dev y sus sub-dependencias.
+      - name: 🧹 Sanear sistema de paquetes (fix-broken)
         run: |
           sudo apt-get update -qq
+          sudo apt-get upgrade -y -qq
+          sudo apt --fix-broken install -y
+          echo "✅ Sistema de paquetes saneado"
+
+      # ── PASO 3B: Instalar herramientas base ────────────────────────
+      #
+      # Solo herramientas universales sin dependencias conflictivas.
+      # Separado del bloque de librerías para aislar errores.
+      #
+      # ELIMINADOS respecto a v3 (causaban conflictos):
+      #   ✗ libgstreamer1.0-dev  → conflicto "held broken packages"
+      #   ✗ libglib2.0-dev       → sub-dep de gstreamer, conflictiva
+      #   ✗ lld                  → conflicto con build-essential
+      #   ✗ libncurses5-dev      → duplicado conflictivo con libncurses5
+      - name: 🔧 Instalar herramientas base del sistema
+        run: |
           sudo apt-get install -y \
             git \
             zip \
             unzip \
+            wget \
+            curl \
             openjdk-17-jdk \
             python3-pip \
-            libssl-dev \
-            libffi-dev \
-            libltdl-dev \
-            libcurl4-openssl-dev \
             build-essential \
             ccache \
             autoconf \
             libtool \
             cmake \
             ninja-build \
-            pkg-config \
+            pkg-config
+          echo "✅ Herramientas base instaladas"
+
+      # ── PASO 3C: Instalar librerías de desarrollo ──────────────────
+      #
+      # Solo las librerías estrictamente necesarias para compilar
+      # las recetas nativas de p4a que usa tu app:
+      #
+      #   libssl-dev      → yt-dlp / instaloader (urllib3, requests)
+      #   libffi-dev      → cffi, módulos nativos de Python
+      #   libltdl-dev     → libtool, recetas p4a que usan .so dinámicos
+      #   zlib1g-dev      → compresión, requerida por pillow y p4a
+      #   libjpeg-dev     → pillow (decodificación JPEG)
+      #   libpng-dev      → pillow (decodificación PNG)
+      #   libsqlite3-dev  → yt-dlp usa sqlite3 para caché interno
+      #   patchelf        → p4a reubica rutas de .so en el APK
+      #   libncurses5     → herramientas del NDK de Android
+      #   libcurl4-openssl-dev → recetas de red en p4a
+      - name: 🔧 Instalar librerías de desarrollo
+        run: |
+          sudo apt-get install -y \
+            libssl-dev \
+            libffi-dev \
+            libltdl-dev \
+            libcurl4-openssl-dev \
             zlib1g-dev \
             libjpeg-dev \
             libpng-dev \
-            patchelf \
-            libglib2.0-dev \
-            lld \
-            libgstreamer1.0-dev \
             libsqlite3-dev \
-            wget \
-            curl \
-            libncurses5 \
-            libncurses5-dev
+            patchelf \
+            libncurses5
+          echo "✅ Librerías de desarrollo instaladas"
 
-      # ── PASO 4: Instalar Buildozer, Cython y herramientas ─────────
-      # · Cython 0.29.37 es la última versión 0.29.x — NO usar 3.x
-      # · virtualenv requerido por Buildozer para aislar entornos
-      # · colorama mejora los logs de Buildozer en CI
+      # ── PASO 4: Instalar Buildozer, Cython y herramientas Python ───
       - name: 📦 Instalar Buildozer, Cython y herramientas Python
         run: |
           pip install --upgrade pip setuptools wheel
           pip install "cython==0.29.37"
           pip install buildozer
           pip install virtualenv colorama
+          echo "✅ Buildozer y Cython instalados"
 
       # ── PASO 5: Verificar versiones ────────────────────────────────
       - name: 🔍 Verificar versiones instaladas
         run: |
-          echo "── Python ──────────────────"
+          echo "── Python ──────────────────────────────"
           python --version
-          echo "── Java ────────────────────"
+          echo "── Java ────────────────────────────────"
           java -version
-          echo "── Buildozer ───────────────"
+          echo "── Buildozer ───────────────────────────"
           buildozer version
-          echo "── Cython ──────────────────"
+          echo "── Cython ──────────────────────────────"
           cython --version
-          echo "── patchelf ────────────────"
+          echo "── patchelf ────────────────────────────"
           patchelf --version
+          echo "── cmake ───────────────────────────────"
+          cmake --version
 
-      # ── PASO 6: Restaurar caché ────────────────────────────────────
-      # Key v3- para resetear cachés corruptos de v1/v2.
+      # ── PASO 6: Restaurar caché (SDK / NDK / Gradle / p4a) ────────
       - name: 💾 Restaurar caché (SDK / NDK / Gradle / p4a)
         uses: actions/cache@v4
         with:
@@ -127,55 +152,39 @@ jobs:
             .buildozer
             ~/.gradle
             ~/.android
-          key: buildozer-v3-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          key: buildozer-v4-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
-            buildozer-v3-${{ runner.os }}-
+            buildozer-v4-${{ runner.os }}-
 
-      # ── PASO 7: Pre-aceptar licencias Android SDK (FASE 1) ─────────
+      # ── PASO 7: Aceptar licencias Android SDK — Fase 1 (hashes) ───
       #
-      # FIX CRÍTICO respecto a v2:
-      # En v2 se escribían los hashes ANTES de que Buildozer descargara
-      # el SDK, pero Buildozer crea su propia carpeta de SDK en
-      # ~/.buildozer/android/platform/android-sdk/ y luego llama a
-      # sdkmanager, que vuelve a pedir las licencias.
-      #
-      # Solución en dos subfases:
-      #   A) Escribir hashes en la ruta de Buildozer (por si el SDK
-      #      ya está en caché de un run anterior).
-      #   B) Instalar sdkmanager independiente y aceptar licencias
-      #      con "yes | sdkmanager --licenses" ANTES del build.
-      - name: 🔐 Pre-aceptar licencias Android SDK (Fase 1 — hashes directos)
+      # Escribe los hashes oficiales de licencia en la ruta que
+      # Buildozer usa para el SDK. Cubre el caso en que el SDK
+      # ya está en caché de un run anterior.
+      - name: 🔐 Licencias Android SDK — Fase 1 (hashes directos)
         run: |
-          # Carpeta que Buildozer usa para el SDK
           SDK_DIR="$HOME/.buildozer/android/platform/android-sdk"
           mkdir -p "$SDK_DIR/licenses"
 
-          # Hash de licencia principal (android-sdk-license)
           printf "24333f8a63b6825ea9c5514f83c2829b004d1fee\n8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e" \
             > "$SDK_DIR/licenses/android-sdk-license"
 
-          # Hash de licencia preview
           printf "84831b9409646a918e30573bab4c9c91346d8abd\n504667f4c0de7af1a06de9f4b1727b84351f2910" \
             > "$SDK_DIR/licenses/android-sdk-preview-license"
 
-          # Hash de licencia de herramientas Intel
           printf "33b6a2b64607f11b759f320ef9dff4ae5c47d97a" \
             > "$SDK_DIR/licenses/intel-android-extra-license"
 
-          echo "✅ Hashes de licencias escritos en $SDK_DIR/licenses/"
+          echo "✅ Hashes escritos:"
           ls -la "$SDK_DIR/licenses/"
 
-      # ── PASO 8: Pre-aceptar licencias (FASE 2 — sdkmanager) ────────
+      # ── PASO 8: Aceptar licencias Android SDK — Fase 2 (sdkmanager)
       #
-      # Descarga el command-line tools de Android SDK y acepta TODAS
-      # las licencias con "yes |" para que sdkmanager no quede
-      # esperando input en modo CI.
-      #
-      # Esto garantiza que cuando Buildozer llame a sdkmanager
-      # internamente, las licencias ya estén aceptadas globalmente.
-      - name: 🔐 Pre-aceptar licencias Android SDK (Fase 2 — sdkmanager)
+      # Descarga el binario oficial de sdkmanager y acepta todas
+      # las licencias con "yes |" antes de que Buildozer llame a
+      # sdkmanager internamente (donde no hay input disponible).
+      - name: 🔐 Licencias Android SDK — Fase 2 (sdkmanager yes)
         run: |
-          # Descargar command-line tools de Android SDK
           SDK_TOOLS_URL="https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
           SDK_INSTALL_DIR="$HOME/.buildozer/android/platform/android-sdk"
           TOOLS_DIR="$SDK_INSTALL_DIR/cmdline-tools/latest"
@@ -183,64 +192,55 @@ jobs:
           mkdir -p "$TOOLS_DIR"
           wget -q "$SDK_TOOLS_URL" -O /tmp/cmdline-tools.zip
           unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-tools-raw
-          # La estructura interna del zip es cmdline-tools/
           cp -r /tmp/cmdline-tools-raw/cmdline-tools/* "$TOOLS_DIR/"
           rm -rf /tmp/cmdline-tools.zip /tmp/cmdline-tools-raw
 
-          # Aceptar TODAS las licencias disponibles
           export ANDROID_SDK_ROOT="$SDK_INSTALL_DIR"
-          yes | "$TOOLS_DIR/bin/sdkmanager" --licenses --sdk_root="$SDK_INSTALL_DIR" || true
+          yes | "$TOOLS_DIR/bin/sdkmanager" \
+            --licenses \
+            --sdk_root="$SDK_INSTALL_DIR" || true
 
           echo "✅ Licencias aceptadas via sdkmanager"
           ls -la "$SDK_INSTALL_DIR/licenses/" 2>/dev/null || true
 
-      # ── PASO 9: Preparar entorno HOME y archivos de config ─────────
-      - name: ⚙️ Preparar entorno de compilación
+      # ── PASO 9: Preparar entorno y verificar archivos del repo ─────
+      - name: ⚙️ Preparar entorno y verificar archivos del repo
         run: |
           export HOME=/home/runner
           mkdir -p "$HOME/.android"
           touch "$HOME/.android/repositories.cfg"
 
-          # Verificar que buildozer.spec esté en la raíz
           echo "── Archivos en la raíz del repo ────────"
           ls -la
 
-          # Verificar que main.py y mstl_logic.py existen
+          echo ""
+          echo "── Verificación de archivos requeridos ─"
           for f in main.py mstl_logic.py buildozer.spec icon.png; do
             if [ -f "$f" ]; then
-              echo "  ✅ $f encontrado"
+              echo "  ✅ $f"
             else
-              echo "  ❌ $f NO encontrado — build fallará"
+              echo "  ❌ $f — NO encontrado (build fallará)"
             fi
           done
 
-      # ── PASO 10: Compilar APK — Fase A: preparar SDK ───────────────
+      # ── PASO 10: Preparar SDK / NDK (buildozer android update) ─────
       #
-      # "buildozer android update" descarga SDK/NDK si no están
-      # en caché y configura el entorno antes de la compilación real.
-      # Separarlo del build principal permite ver exactamente dónde
-      # falla si el problema es de SDK vs de compilación de código.
-      #
-      # "|| true" evita que un exit code != 0 detenga el workflow
-      # aquí (algunos warnings de sdkmanager devuelven exit 1).
-      - name: 🛠️ Preparar SDK / NDK (buildozer android update)
+      # Descarga SDK/NDK si no están en caché y configura el entorno.
+      # "|| true" porque sdkmanager a veces devuelve exit code 1
+      # con warnings no fatales.
+      - name: 🛠️ Preparar SDK y NDK (buildozer android update)
         run: |
           export HOME=/home/runner
           export PATH="$HOME/.local/bin:$PATH"
           export ANDROID_SDK_ROOT="$HOME/.buildozer/android/platform/android-sdk"
 
-          echo "── Iniciando buildozer android update ──"
           yes | buildozer android update 2>&1 | tee update.log || true
-          echo "── Update finalizado ───────────────────"
+          echo "✅ Update finalizado"
 
-      # ── PASO 11: Compilar APK — Fase B: build real ─────────────────
+      # ── PASO 11: Compilar APK (buildozer -v android debug) ─────────
       #
-      # Se usa "script" para capturar TODO (stdout + stderr) incluyendo
-      # salidas de subprocesos que "tee" pierde.
-      # El flag --return hace que "script" propague el exit code real.
-      #
-      # Si esta fase falla, el Paso 13 subirá build.log igualmente
-      # gracias a "if: always()".
+      # "script --return" captura stdout + stderr + subprocesos.
+      # Es más completo que "tee" para capturar errores tempranos.
       - name: 🔨 Compilar APK (buildozer -v android debug)
         run: |
           export HOME=/home/runner
@@ -248,31 +248,30 @@ jobs:
           export ANDROID_SDK_ROOT="$HOME/.buildozer/android/platform/android-sdk"
           export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 
-          echo "── Iniciando compilación APK ────────────"
           script --return --quiet -c \
             "buildozer -v android debug 2>&1" \
             build.log
-          echo "── Compilación finalizada ──────────────"
+          echo "✅ Compilación finalizada"
 
-      # ── PASO 12: Verificar resultado y listar APKs ─────────────────
-      - name: 📋 Verificar APKs generados
+      # ── PASO 12: Verificar APKs generados ──────────────────────────
+      - name: 📋 Verificar APKs y árbol del workspace
         run: |
           echo "── Contenido de bin/ ───────────────────"
-          ls -lah bin/ 2>/dev/null || echo "⚠️  La carpeta bin/ no existe"
+          ls -lah bin/ 2>/dev/null || echo "⚠️  bin/ no existe"
 
           echo ""
-          echo "── Archivos .apk encontrados ───────────"
-          find . -name "*.apk" 2>/dev/null || echo "⚠️  Ningún .apk encontrado en el workspace"
+          echo "── Todos los .apk en el workspace ──────"
+          find . -name "*.apk" 2>/dev/null || echo "⚠️  Ningún .apk encontrado"
 
           echo ""
           echo "── Árbol del workspace (nivel 2) ───────"
-          find . -maxdepth 2 -not -path './.buildozer/*' \
-                             -not -path './.git/*' \
-                             -not -path './node_modules/*' \
+          find . -maxdepth 2 \
+            -not -path './.buildozer/*' \
+            -not -path './.git/*' \
             | sort
 
-      # ── PASO 13: Subir APK como artefacto ──────────────────────────
-      - name: 📦 Subir APK como Artefacto descargable
+      # ── PASO 13: Subir APK como artefacto descargable ──────────────
+      - name: 📦 Subir APK como artefacto
         uses: actions/upload-artifact@v4
         with:
           name: cyberload-mstl-apk
@@ -280,16 +279,12 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-      # ── PASO 14: Subir log completo (SIEMPRE, incluso si falla) ────
-      #
-      # "if: always()" garantiza que este paso corra aunque cualquier
-      # paso anterior haya fallado. Así siempre tendrás el log para
-      # diagnosticar sin necesidad de relanzar el workflow.
-      - name: 📄 Subir log de build y update (siempre)
+      # ── PASO 14: Subir logs (siempre, incluso si el build falla) ───
+      - name: 📄 Subir logs de build y update (siempre)
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: build-logs
+          name: build-logs-v4
           path: |
             build.log
             update.log
@@ -297,29 +292,14 @@ jobs:
           if-no-files-found: warn
 
 # ──────────────────────────────────────────────────────────────────────
-#  CÓMO DIAGNOSTICAR SI SIGUE FALLANDO
+#  ESTRUCTURA REQUERIDA EN TU REPO
 #  ─────────────────────────────────────────────────────────────────────
-#
-#  1. Ve a GitHub → tu repo → Actions → el run fallido
-#  2. Descarga el artefacto "build-logs" (disponible incluso si falla)
-#  3. Abre build.log y busca la última línea con "ERROR" o "Exception"
-#  4. Los errores más comunes y sus fixes:
-#
-#     "SDK not found" / "NDK not found"
-#       → El caché de v2 puede estar corrupto. Borra el caché en
-#         GitHub → Settings → Actions → Caches y relanza.
-#
-#     "Unable to install buildozer"
-#       → Verificar que pip install buildozer completó en Paso 4.
-#
-#     "Recipe for X failed"
-#       → Alguna dependencia nativa en requirements del buildozer.spec
-#         no tiene receta en p4a. Considera quitar esa dependencia
-#         o buscar el nombre exacto de la receta p4a.
-#
-#     "License not accepted"
-#       → Los hashes del Paso 7 pueden estar desactualizados.
-#         Busca los hashes actuales en:
-#         https://developer.android.com/studio/intro/update#sdk-manager
-#
+#    tu-repo/
+#    ├── .github/
+#    │   └── workflows/
+#    │       └── build_apk.yml   ← ESTE ARCHIVO
+#    ├── main.py
+#    ├── mstl_logic.py
+#    ├── icon.png
+#    └── buildozer.spec
 # ──────────────────────────────────────────────────────────────────────
