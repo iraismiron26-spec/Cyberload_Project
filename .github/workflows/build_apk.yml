@@ -1,13 +1,13 @@
 # ╔══════════════════════════════════════════════════════════════════════╗
-# ║  CYBERLOAD MSTL — GitHub Actions Workflow v10                       ║
+# ║  CYBERLOAD MSTL — GitHub Actions Workflow v11                       ║
 # ║                                                                      ║
-# ║  Fixes sobre V9:                                                     ║
-# ║  · Java 17 → Java 11                                                ║
-# ║    javax/xml/bind (JAXB) fue eliminado en Java 11+.                 ║
-# ║    Buildozer usa AGP 7.x que solo es compatible con Java 11.        ║
-# ║    Con Java 17 el build explota con NoClassDefFoundError.           ║
-# ║  · FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true                          ║
-# ║    Opt-in a Node.js 24 → elimina los 2 warnings de deprecación.    ║
+# ║  FIX DEFINITIVO vs V9/V10:                                          ║
+# ║  · Eliminado el paso manual de "Configurar Android SDK"             ║
+# ║    El paquete sdkmanager "tools" no existe en el SDK moderno        ║
+# ║    → causaba "exit code 1" antes de empezar a compilar.            ║
+# ║  · Buildozer gestiona su propio SDK completamente (diseño original) ║
+# ║  · Eliminado ANDROID_SDK_ROOT del env (confundía a buildozer)      ║
+# ║  · Java 11 mantenido (fix del error JAXB de V10)                   ║
 # ╚══════════════════════════════════════════════════════════════════════╝
 
 name: 🤖 Build Cyberload MSTL APK
@@ -24,24 +24,24 @@ permissions:
 
 jobs:
   build-apk:
-    name: 🏗️ Compilar APK (v10 — Java 11 + Node24)
+    name: 🏗️ Compilar APK (v11 — Buildozer autónomo)
     runs-on: ubuntu-22.04
 
     env:
-      # ── Fix Node.js 20 deprecation warnings ──────────────────────
-      # Hace opt-in inmediato a Node.js 24 en todas las actions.
-      # Elimina los 2 warnings de "Node.js 20 deprecated" del runner.
+      # ── Node.js 24 opt-in ─────────────────────────────────────────
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
-      # ── Ruta del SDK ──────────────────────────────────────────────
-      # Ruta EXACTA donde buildozer busca el SDK por defecto.
-      # Al pre-instalar el SDK aquí, buildozer lo detecta sin re-descargarlo.
-      ANDROID_SDK_ROOT: "/home/runner/.buildozer/android/platform/android-sdk"
-      ANDROID_HOME:     "/home/runner/.buildozer/android/platform/android-sdk"
-
-      # ── Variables de buildozer ────────────────────────────────────
-      BUILDOZER_WARN_ON_ROOT:               "0"
+      # ── Variables internas de Buildozer ───────────────────────────
+      # BUILDOZER_ANDROID_SDK_ACCEPT_LICENSE:
+      #   Le dice a buildozer que acepte las licencias del SDK
+      #   automáticamente durante su propio proceso de instalación.
+      #   Buildozer lee esta variable y responde "y" a los prompts.
+      #
+      # BUILDOZER_WARN_ON_ROOT:
+      #   Suprime la advertencia de "corriendo como root" que puede
+      #   interrumpir el output verbose en GitHub Actions.
       BUILDOZER_ANDROID_SDK_ACCEPT_LICENSE: "y"
+      BUILDOZER_WARN_ON_ROOT: "0"
 
     steps:
 
@@ -53,21 +53,11 @@ jobs:
 
       # ── PASO 2: Java 11 (Temurin) ─────────────────────────────────
       #
-      # FIX CRÍTICO v10: Java 17 → Java 11
-      #
-      # Por qué Java 11 y NO Java 17:
-      #   · JAXB (javax.xml.bind) fue eliminado del JDK en Java 11+.
-      #   · Buildozer genera internamente un proyecto Gradle que usa
-      #     Android Gradle Plugin (AGP) 7.x.
-      #   · AGP 7.x requiere Java 11. No es compatible con Java 17.
-      #   · Con Java 17 el build lanza:
-      #     "NoClassDefFoundError: javax/xml/bind/annotation/XmlSchema"
-      #     y muere antes de compilar nada.
-      #   · Con Java 11 AGP 7.x funciona correctamente.
-      #
-      # Por qué no Java 8:
-      #   · AGP 7.x require Java 11 como mínimo.
-      #   · Java 8 causaría otros errores de compatibilidad con Gradle.
+      # Java 11 — NO Java 17.
+      # El Android Gradle Plugin 7.x (que buildozer usa internamente)
+      # solo es compatible con Java 11. Con Java 17 el build lanza:
+      # "NoClassDefFoundError: javax/xml/bind/annotation/XmlSchema"
+      # porque JAXB fue eliminado en Java 11+ y AGP 7.x lo necesita.
       # ─────────────────────────────────────────────────────────────
       - name: ☕ Instalar Java 11 (Temurin)
         uses: actions/setup-java@v4
@@ -82,6 +72,9 @@ jobs:
           python-version: "3.10"
 
       # ── PASO 4: Dependencias del sistema ──────────────────────────
+      # Lista mínima y estable confirmada para Ubuntu 22.04.
+      # Buildozer verifica estas dependencias al arrancar y falla
+      # si alguna falta. Las instalamos aquí para evitar errores.
       - name: 🔧 Instalar dependencias del sistema
         run: |
           sudo apt-get update -qq
@@ -120,8 +113,9 @@ jobs:
           echo "$JAVA_HOME"
 
       # ── PASO 7: Restaurar caché ────────────────────────────────────
-      # Key v10- descarta la caché de V9 que fue generada con Java 17
-      # (archivos Gradle compilados con Java 17 no son compatibles con 11).
+      # Key v11- descarta la caché corrupta de V10.
+      # La caché de V10 fue generada durante un build fallido con
+      # SDK instalado manualmente → puede contener archivos rotos.
       - name: 💾 Restaurar caché (SDK / NDK / p4a / Gradle)
         uses: actions/cache@v4
         with:
@@ -130,9 +124,9 @@ jobs:
             .buildozer
             ~/.gradle
             ~/.android
-          key: buildozer-v10-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          key: buildozer-v11-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
-            buildozer-v10-${{ runner.os }}-
+            buildozer-v11-${{ runner.os }}-
 
       # ── PASO 8: Verificar archivos del repo ───────────────────────
       - name: ⚙️ Verificar archivos del repo
@@ -149,79 +143,41 @@ jobs:
             fi
           done
 
-      # ── PASO 9: CONFIGURAR ANDROID SDK ────────────────────────────
+      # ── PASO 9: COMPILAR APK ───────────────────────────────────────
       #
-      # FIX ORIGINAL DE V9 (mantenido):
-      #   Instala el paquete "tools" que crea tools/bin/sdkmanager,
-      #   el binario que buildozer busca y que NO existía en V6/V7/V8.
+      # ESTRATEGIA CENTRAL v11 — BUILDOZER AUTÓNOMO:
       #
-      # Flujo:
-      #   1. Instalar cmdline-tools/latest → sdkmanager moderno
-      #   2. sdkmanager --licenses          → aceptar licencias
-      #   3. sdkmanager "tools"             → crear tools/bin/sdkmanager
-      #   4. Pre-instalar componentes       → evitar prompts en el build
+      # Buildozer gestiona su propio SDK completamente:
+      #   · Descarga Android cmdline-tools en ~/.buildozer/
+      #   · Instala el SDK, NDK y build-tools en esa misma ruta
+      #   · Acepta las licencias automáticamente (BUILDOZER_ANDROID_SDK_ACCEPT_LICENSE=y)
+      #   · Configura las rutas internas correctamente sin conflictos
+      #
+      # Por qué eliminamos el paso manual de SDK (V9/V10):
+      #   · sdkmanager "tools" no existe en el SDK moderno → exit code 1
+      #   · Instalar SDK manualmente crea conflictos de rutas con buildozer
+      #   · Buildozer fue diseñado para hacer esto por sí mismo
+      #
+      # "yes |" responde automáticamente a cualquier prompt residual.
+      # "-v" muestra cada paso para diagnóstico si algo falla.
+      # "2>&1 | tee build.log" captura stdout + stderr simultáneamente.
+      #
+      # TIEMPOS ESTIMADOS:
+      #   · Run #1 sin caché : 40 – 60 minutos
+      #   · Run #2+ con caché:  8 – 15 minutos
       # ─────────────────────────────────────────────────────────────
-      - name: 🔐 Configurar Android SDK + Aceptar licencias
-        run: |
-          echo "════════════════════════════════════════════"
-          echo " PASO 9 — Configuración del Android SDK"
-          echo "════════════════════════════════════════════"
-
-          echo ""
-          echo "── Creando estructura SDK en: $ANDROID_SDK_ROOT"
-          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
-
-          echo ""
-          echo "── Descargando Android cmdline-tools..."
-          wget -q \
-            "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" \
-            -O /tmp/cmdlinetools.zip
-          unzip -q /tmp/cmdlinetools.zip -d /tmp/ct_extract
-          mv /tmp/ct_extract/cmdline-tools "$ANDROID_SDK_ROOT/cmdline-tools/latest"
-          rm -rf /tmp/ct_extract /tmp/cmdlinetools.zip
-          echo "  ✅ cmdline-tools/latest instalado"
-
-          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
-
-          echo ""
-          echo "── Aceptando licencias Android SDK..."
-          yes | sdkmanager --licenses || true
-          echo "  ✅ Licencias aceptadas"
-
-          echo ""
-          echo "── Instalando paquete 'tools' (FIX: tools/bin/sdkmanager)..."
-          sdkmanager "tools"
-          if [ -f "$ANDROID_SDK_ROOT/tools/bin/sdkmanager" ]; then
-            echo "  ✅ VERIFICADO: tools/bin/sdkmanager existe"
-          else
-            echo "  ❌ ERROR: tools/bin/sdkmanager NO encontrado"
-          fi
-
-          echo ""
-          echo "── Pre-instalando componentes del SDK..."
-          sdkmanager \
-            "platform-tools" \
-            "platforms;android-33" \
-            "build-tools;33.0.2"
-          echo "  ✅ Componentes pre-instalados"
-
-          echo ""
-          echo "── Estructura SDK (nivel 2) ────────────────────────"
-          find "$ANDROID_SDK_ROOT" -maxdepth 2 -type d | sort
-
-      # ── PASO 10: COMPILAR APK ──────────────────────────────────────
       - name: 🔨 Compilar APK con Buildozer
         run: |
-          echo "── Iniciando buildozer android debug ───"
+          echo "── Iniciando compilación ───────────────"
           yes | buildozer -v android debug 2>&1 | tee build.log
-          echo "── Build finalizado ─────────────────────"
+          echo "── Compilación finalizada ───────────────"
 
-      # ── PASO 11: DEBUG WORKSPACE ───────────────────────────────────
+      # ── PASO 10: DEBUG WORKSPACE ───────────────────────────────────
       - name: 🔎 Debug Workspace — buscar APK generado
         if: always()
         run: |
           echo "════════════════════════════════════════"
-          echo "  DEBUG WORKSPACE v10"
+          echo "  DEBUG WORKSPACE v11"
           echo "════════════════════════════════════════"
 
           echo ""
@@ -242,25 +198,25 @@ jobs:
             | sort
 
           echo ""
-          echo "── Últimas 80 líneas de build.log ──────"
-          tail -80 build.log 2>/dev/null || echo "⚠️  build.log no encontrado"
+          echo "── Últimas 100 líneas de build.log ─────"
+          tail -100 build.log 2>/dev/null || echo "⚠️  build.log no encontrado"
 
-      # ── PASO 12: Subir APK como artefacto ─────────────────────────
+      # ── PASO 11: Subir APK como artefacto ─────────────────────────
       - name: 📦 Subir APK como artefacto
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: cyberload-mstl-apk-v10
+          name: cyberload-mstl-apk-v11
           path: bin/*.apk
           retention-days: 30
           if-no-files-found: warn
 
-      # ── PASO 13: Subir log de build ───────────────────────────────
+      # ── PASO 12: Subir log de build ───────────────────────────────
       - name: 📄 Subir log de build (siempre)
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: build-log-v10
+          name: build-log-v11
           path: build.log
           retention-days: 14
           if-no-files-found: warn
@@ -274,7 +230,7 @@ jobs:
 #    │       └── build_apk.yml
 #    ├── main.py
 #    ├── mstl_logic.py
-#    ├── icon.png              ← OBLIGATORIO (PNG de 512x512)
+#    ├── icon.png              ← OBLIGATORIO (PNG de cualquier tamaño)
 #    └── buildozer.spec
 #
 #  TIEMPOS ESPERADOS:
@@ -282,6 +238,7 @@ jobs:
 #    · Run #2+ con caché:  8 – 15 minutos
 #
 #  SI FALLA:
-#    · Descarga "build-log-v10" desde la sección Artifacts del run
+#    · Descarga "build-log-v11" desde la sección Artifacts del run
+#    · Las últimas 100 líneas del log aparecen en "Debug Workspace"
 #    · Busca la primera línea con "ERROR" o "Exception"
 # ──────────────────────────────────────────────────────────────────────
