@@ -1,12 +1,19 @@
 # ╔══════════════════════════════════════════════════════════════════════╗
-# ║  CYBERLOAD MSTL — GitHub Actions Workflow v12                       ║
+# ║  CYBERLOAD MSTL — GitHub Actions Workflow v13                       ║
 # ║                                                                      ║
-# ║  Fix vs V11 — APK no se generaba sin error visible:                 ║
-# ║  · Añadido "set -o pipefail" al paso de compilación                 ║
-# ║    yes | buildozer | tee enmascaraba el exit code de buildozer      ║
-# ║    → ahora si buildozer falla el paso muestra error real            ║
-# ║  · Buildozer sigue siendo autónomo (sin SDK manual)                 ║
-# ║  · Java 11 mantenido (fix JAXB de V10)                             ║
+# ║  Cambios V13 vs V12:                                                ║
+# ║  · Cache key → v13 (busta caché corrupta de V12)                   ║
+# ║  · Artefacto → cyberload-mstl-apk-v13                             ║
+# ║  · Labels actualizados a v13                                        ║
+# ║                                                                      ║
+# ║  FIX heredado de V12 (sigue activo):                               ║
+# ║  · "set -o pipefail" para capturar errores reales de buildozer     ║
+# ║  · Java 11 Temurin (AGP 7.x incompatible con Java 17)             ║
+# ║  · Cython 0.29.37 (Cython 3.x rompe recetas p4a)                  ║
+# ║                                                                      ║
+# ║  FIX principal de buildozer.spec V13:                              ║
+# ║  · openssl ELIMINADO de requirements — no existe en PyPI           ║
+# ║    p4a lo compila internamente como receta nativa                   ║
 # ╚══════════════════════════════════════════════════════════════════════╝
 
 name: 🤖 Build Cyberload MSTL APK
@@ -23,7 +30,7 @@ permissions:
 
 jobs:
   build-apk:
-    name: 🏗️ Compilar APK (v12 — pipefail fix)
+    name: 🏗️ Compilar APK (v13)
     runs-on: ubuntu-22.04
 
     env:
@@ -83,7 +90,11 @@ jobs:
           echo "── Cython ────────────────────────────────"
           cython --version
 
-      # Key v12- → reset de caché de V11 (generada con build incompleto)
+      # ── CACHÉ V13 ─────────────────────────────────────────────────
+      # Clave v13: busta caché de V12 que tenía openssl roto.
+      # Una caché corrupta reaplicaría el mismo error, así que
+      # forzamos reconstrucción completa del entorno p4a con V13.
+      # ─────────────────────────────────────────────────────────────
       - name: 💾 Restaurar caché (SDK / NDK / p4a / Gradle)
         uses: actions/cache@v4
         with:
@@ -92,9 +103,9 @@ jobs:
             .buildozer
             ~/.gradle
             ~/.android
-          key: buildozer-v12-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          key: buildozer-v13-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
-            buildozer-v12-${{ runner.os }}-
+            buildozer-v13-${{ runner.os }}-
 
       - name: ⚙️ Verificar archivos del repo
         run: |
@@ -105,32 +116,24 @@ jobs:
             [ -f "$f" ] && echo "  ✅ $f" || echo "  ❌ $f — NO encontrado"
           done
 
-      # ── PASO DE COMPILACIÓN — FIX CRÍTICO v12 ─────────────────────
+      # ── PASO DE COMPILACIÓN ────────────────────────────────────────
       #
-      # PROBLEMA DE V11:
-      #   yes | buildozer -v android debug 2>&1 | tee build.log
-      #   El exit code de este pipeline es el de "tee" (siempre 0).
-      #   Si buildozer falla internamente, el paso reporta "success"
-      #   y GitHub Actions no muestra ningún error → APK nunca se genera
-      #   pero el workflow termina "verde".
-      #
-      # FIX v12:
-      #   "set -o pipefail" hace que el pipeline propague el exit code
-      #   del primer comando que falle (buildozer en este caso).
-      #   Si buildozer retorna 1, el paso entero retorna 1 → error visible.
+      # "set -o pipefail" (fix V12): propaga el exit code real de
+      # buildozer a través del pipe de tee → si falla, el paso falla.
+      # Sin esta línea: tee siempre retorna 0 y el error queda oculto.
       # ─────────────────────────────────────────────────────────────
       - name: 🔨 Compilar APK con Buildozer
         run: |
           set -o pipefail
-          echo "── Iniciando compilación ───────────────"
+          echo "── Iniciando compilación V13 ─────────────"
           yes | buildozer -v android debug 2>&1 | tee build.log
-          echo "── Compilación finalizada con éxito ─────"
+          echo "── Compilación V13 finalizada con éxito ──"
 
       - name: 🔎 Debug Workspace — buscar APK generado
         if: always()
         run: |
           echo "════════════════════════════════════════"
-          echo "  DEBUG WORKSPACE v12"
+          echo "  DEBUG WORKSPACE v13"
           echo "════════════════════════════════════════"
           echo ""
           echo "── bin/ ────────────────────────────────"
@@ -141,14 +144,14 @@ jobs:
             && echo "✅ APK encontrado" \
             || echo "⚠️  Ningún .apk encontrado"
           echo ""
-          echo "── Últimas 100 líneas de build.log ─────"
-          tail -100 build.log 2>/dev/null || echo "⚠️  build.log no encontrado"
+          echo "── Últimas 120 líneas de build.log ─────"
+          tail -120 build.log 2>/dev/null || echo "⚠️  build.log no encontrado"
 
       - name: 📦 Subir APK como artefacto
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: cyberload-mstl-apk-v12
+          name: cyberload-mstl-apk-v13
           path: bin/*.apk
           retention-days: 30
           if-no-files-found: warn
@@ -157,7 +160,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: build-log-v12
+          name: build-log-v13
           path: build.log
           retention-days: 14
           if-no-files-found: warn
@@ -169,6 +172,6 @@ jobs:
 #    ├── .github/workflows/build_apk.yml
 #    ├── main.py
 #    ├── mstl_logic.py
-#    ├── icon.png       ← OBLIGATORIO
+#    ├── icon.png           ← OBLIGATORIO (buildozer falla sin él)
 #    └── buildozer.spec
 # ──────────────────────────────────────────────────────────────────────
