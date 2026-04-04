@@ -8,7 +8,6 @@
 name: Build Android APK
 
 # ── Activador ──────────────────────────────────────────────────────────
-# El workflow se dispara en cada push a la rama 'main'.
 on:
   push:
     branches:
@@ -24,19 +23,15 @@ jobs:
 
       # ── PASO 1: Clonar el repositorio ────────────────────────────────
       - name: 🔍 Checkout del Repositorio
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4                        # ✅ v4 (actualizado)
 
       # ── PASO 2: Configurar Python 3.9 ────────────────────────────────
-      # Python 3.9 es la versión más estable para Buildozer + Kivy 2.2.1
-      # Python 3.10+ puede generar conflictos en recetas p4a.
       - name: 🐍 Configurar Python 3.9
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5                    # ✅ v5 (actualizado)
         with:
           python-version: '3.9'
 
       # ── PASO 3: Instalar Buildozer y Cython ──────────────────────────
-      # cython==0.29.19 es la versión pinneada requerida.
-      # Cython 3.x rompe la compilación de módulos de Kivy/p4a.
       - name: 📦 Instalar Buildozer y Cython
         run: |
           pip install --upgrade pip
@@ -44,9 +39,6 @@ jobs:
           pip install cython==0.29.19
 
       # ── PASO 4: Instalar dependencias del sistema (apt-get) ───────────
-      # Librerías de desarrollo requeridas por Kivy, SDL2, GStreamer y p4a.
-      # NOTA: libffi6 no existe en Ubuntu 22.04+; se reemplaza por
-      #       libffi-dev + intento gracioso de libffi8 (|| true).
       - name: 🔧 Instalar Dependencias del Sistema
         run: |
           sudo apt-get update -y
@@ -82,25 +74,18 @@ jobs:
             libncursesw5-dev \
             libffi-dev \
             uuid-dev
-          # Intento gracioso: libffi6 (Ubuntu 20.04) o libffi8 (Ubuntu 22.04+)
           sudo apt-get install -y libffi8 || sudo apt-get install -y libffi6 || true
 
-      # ── PASO 5: Instalar Java 17 ──────────────────────────────────────
-      # android.api=33 + build_tools_version=33.0.2 requieren Java 17.
-      # Ubuntu latest ya incluye OpenJDK 17; lo activamos explícitamente.
+      # ── PASO 5: Configurar Java 17 ────────────────────────────────────
       - name: ☕ Configurar Java 17
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@v4                      # ✅ v4 (actualizado)
         with:
           distribution: 'temurin'
           java-version: '17'
 
       # ── PASO 6: Restaurar Caché de Buildozer ─────────────────────────
-      # Buildozer descarga NDK 25b (~700 MB) y SDK (~1 GB) en el primer
-      # build. Con caché, compilaciones sucesivas pasan de ~45 min a ~5 min.
-      # La cache key incluye el hash del buildozer.spec: si cambias
-      # requirements, la caché se invalida automáticamente.
       - name: 🗃️ Restaurar Caché de Buildozer
-        uses: actions/cache@v3
+        uses: actions/cache@v4                           # ✅ v4 (actualizado)
         with:
           path: |
             ~/.buildozer
@@ -110,10 +95,7 @@ jobs:
           restore-keys: |
             buildozer-v13-${{ runner.os }}-
 
-      # ── PASO 7: Aceptar licencias Android SDK ────────────────────────
-      # Aunque buildozer.spec tiene android.accept_sdk_license = True,
-      # este paso garantiza que las licencias del SDK estén aceptadas
-      # en el entorno del runner antes de que Buildozer las necesite.
+      # ── PASO 7: Aceptar Licencias Android SDK ────────────────────────
       - name: 📜 Aceptar Licencias Android SDK
         run: |
           mkdir -p ~/.android
@@ -123,23 +105,16 @@ jobs:
           fi
 
       # ── PASO 8: Construir APK Android (Debug) ────────────────────────
-      # buildozer.spec ya está en la raíz del repo (checkout del paso 1).
-      # NO se corre 'buildozer init' para no sobreescribir tu spec v13.
-      # JAVA_HOME → Java 17 (Temurin, configurado en el paso 5).
-      # ANDROID_HOME y ANDROID_SDK_ROOT → compatibilidad con Gradle.
       - name: 🚀 Construir APK Android (Debug)
         run: |
           buildozer android debug 2>&1 | tee build.log
         env:
           JAVA_HOME: ${{ env.JAVA_HOME }}
-          ANDROID_HOME: ${{ env.HOME }}/.buildozer/android/platform/android-sdk
-          ANDROID_SDK_ROOT: ${{ env.HOME }}/.buildozer/android/platform/android-sdk
-          # Evita interacciones de terminal durante la compilación
+          ANDROID_HOME: ${{ env.HOME }}/.buildozer/platform/android-sdk
+          ANDROID_SDK_ROOT: ${{ env.HOME }}/.buildozer/platform/android-sdk
           BUILDOZER_WARN_ON_ROOT: 0
 
       # ── PASO 9: Mostrar log si el build falla ────────────────────────
-      # Si Buildozer falla, este paso muestra las últimas 100 líneas del
-      # log para diagnosticar el error directamente en GitHub Actions.
       - name: 🐛 Mostrar Log (solo si falla el build)
         if: failure()
         run: |
@@ -147,14 +122,12 @@ jobs:
           tail -100 build.log || echo "No se encontró build.log"
 
       # ── PASO 10: Subir APK como Artefacto descargable ────────────────
-      # El APK compilado se guarda en bin/*.apk dentro del repo.
-      # Lo sube como artefacto de GitHub Actions (descargable 90 días).
-      # if-no-files-found: error → el job falla si el APK no se generó.
       - name: 📤 Subir APK como Artefacto
         if: success()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4                 # ✅ v4 (actualizado)
         with:
           name: cyberload-mstl-v13-debug
           path: bin/*.apk
           retention-days: 90
           if-no-files-found: error
+          overwrite: true                                # ✅ nuevo en v4, evita error por nombre duplicado
