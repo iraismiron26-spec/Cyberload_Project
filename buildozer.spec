@@ -5,7 +5,7 @@ package.name = testapp
 package.domain = org.test
 
 source.dir = .
-source.include_exts = py,png,jpg,kv
+source.include_exts = py,png
 
 version = 0.1
 
